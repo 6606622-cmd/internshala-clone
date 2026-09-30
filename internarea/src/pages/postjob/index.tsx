@@ -59,7 +59,7 @@ const index = () => {
       setisloading(true);
 
       const res = await axios.post(
-        "http://localhost:5000/api/job",
+        "https://internshala-clone-a0st.onrender.com/api/job",
         formdata
       );
 

@@ -34,7 +34,7 @@ const index = () => {
       setisloading(true);
 
       const res = await axios.post(
-        "http://localhost:5000/api/admin/adminlogin",
+        "https://internshala-clone-a0st.onrender.com/api/admin/adminlogin",
         formdata
       );
 

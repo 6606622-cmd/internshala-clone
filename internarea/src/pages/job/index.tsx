@@ -29,7 +29,7 @@ const index = () => {
         setLoading(true);
 
         const res = await axios.get(
-          `http://localhost:5000/api/job/${id}`
+          `https://internshala-clone-a0st.onrender.com/api/job/${id}`
         );
 
         console.log("JOB DETAILS:", res.data);

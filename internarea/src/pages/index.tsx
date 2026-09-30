@@ -123,8 +123,8 @@ useEffect(() => {
   const fetchdata = async () => {
     try {
       const [internshipres, jobsres] = await Promise.all([
-        axios.get("http://localhost:5000/api/internship"),
-        axios.get("http://localhost:5000/api/job"),
+        axios.get("https://internshala-clone-a0st.onrender.com/api/internship"),
+        axios.get("https://internshala-clone-a0st.onrender.com/api/job"),
       ]);
 
       setinternship(internshipres.data);

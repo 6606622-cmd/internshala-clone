@@ -32,7 +32,7 @@ const index = () => {
       try {
         setLoading(true);
         const res = await axios.get(
-          `http://localhost:5000/api/job/${id}`
+          `https://internshala-clone-a0st.onrender.com/api/job/${id}`
         );
         console.log("JOB DETAILS:", res.data);
         setJobData(res.data);
@@ -65,7 +65,7 @@ const index = () => {
         availability,
       };
       await axios.post(
-        "http://localhost:5000/api/application",
+        "https://internshala-clone-a0st.onrender.com/api/application",
         applicationdata
       );
       toast.success("Application submitted successfully");
