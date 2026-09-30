@@ -95,11 +95,13 @@ const index = () => {
                     </span>
                   </div>
                   <p className="text-gray-900 font-semibold">
-                    {new Date(data.createdAt).toLocaleDateString("en-US", {
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                    })}
+                   {data.createdAt
+                      ? new Date(data.createdAt).toLocaleDateString("en-US", {
+                          year: "numeric",
+                          month: "long",
+                          day: "numeric",
+                        })
+                      : "N/A"}
                   </p>
                 </div>
 
