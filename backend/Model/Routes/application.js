@@ -1,73 +1,279 @@
-const express = require("express")
-const router = express.Router()
-const application = require("../Application");
 
-router.post("/", async (req, res) => {
-    const applicationdata = new application({
-        company: req.body.company,
-        category: req.body.category,
-        coverLetter: req.body.coverLetter,
-        user: req.body.user,
-        body:req.body.body,
-        Application: req.body.Application,
-    });
-    await applicationdata.save().then((data) => {
-        res.send(data);
-    }).catch((error) => {
-        console.log(error);
-    });
-});
+const express = require("express");
+const mongoose = require("mongoose");
+const { getAuth } = require("firebase-admin/auth");
+const adminApp = require("../../firebaseAdmin");
 
-router.get('/', async (req, res) => {
+const router = express.Router();
+const Application = require("../Application");
+const Resume = require("../../Model/Resume");
+
+// Verify Firebase authentication
+const verifyUser = async (req, res, next) => {
     try {
-        const data = await application.find();
-        res.json(data).status(200)
-    } catch (error) {
-        console.log(error);
-        res.status(404).json({
-            error: "internal server error"
-        });
-    }
-});
-router.get('/:id', async (req, res) => {
-    const { id } = req.params;
-    try {
-        const data = await application.findById(id);
-        if (!data) {
-            res.status(404).json({ error: "application not found" });
+        const header = req.headers.authorization || "";
+
+        if (!header.startsWith("Bearer ")) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
         }
-        res.json(data).status(200);
+
+        const token = header.slice(7).trim();
+
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication token is missing",
+            });
+        }
+
+        req.user = await getAuth(adminApp).verifyIdToken(token);
+        return next();
     } catch (error) {
-        console.log(error);
-        res.status(404).json({
-            error: "internal server error"
+        console.error(
+            "Authentication error:",
+            error.code || error.message
+        );
+
+        return res.status(401).json({
+            success: false,
+            message: "Invalid or expired authentication token",
+        });
+    }
+};
+
+// Verify admin access
+const verifyAdmin = (req, res, next) => {
+    if (req.user?.admin !== true) {
+        return res.status(403).json({
+            success: false,
+            message: "Admin access required",
+        });
+    }
+
+    return next();
+};
+
+// Submit an application
+router.post("/", verifyUser, async (req, res) => {
+    try {
+        const {
+            company,
+            category,
+            coverLetter,
+            Application: jobId,
+            resumeId,
+            availability,
+        } = req.body || {};
+
+        if (
+            typeof company !== "string" ||
+            !company.trim() ||
+            typeof coverLetter !== "string" ||
+            !coverLetter.trim() ||
+            typeof availability !== "string" ||
+            !availability.trim() ||
+            !mongoose.isValidObjectId(resumeId)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Valid company, cover letter, availability, and resume are required",
+            });
+        }
+
+        // Only allow a user to submit a resume belonging to their account.
+        const resume = await Resume.findOne({
+            _id: resumeId,
+            firebaseUid: req.user.uid,
+        });
+
+        if (!resume) {
+            return res.status(404).json({
+                success: false,
+                message: "Selected resume was not found in your account",
+            });
+        }
+
+        if (resume.status !== "generated" || !resume.pdfUrl) {
+            return res.status(409).json({
+                success: false,
+                message: "Please select a generated resume with a PDF",
+            });
+        }
+
+        const applicationData = new Application({
+            company: company.trim(),
+            category:
+                typeof category === "string" ? category : "",
+            coverLetter: coverLetter.trim(),
+
+            user: {
+                uid: req.user.uid,
+                email: req.user.email || "",
+                name: req.user.name || "",
+            },
+
+            firebaseUid: req.user.uid,
+            Application: jobId,
+            resumeId: resume._id,
+            resumeTitle: resume.title || "",
+            availability: availability.trim(),
+        });
+
+        const saved = await applicationData.save();
+
+        return res.status(201).json({
+            success: true,
+            message: "Application submitted successfully",
+            data: saved,
+        });
+    } catch (error) {
+        console.error("Application submission error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to submit application",
         });
     }
 });
-router.put("/:id", async (req, res) => {
-    const { id } = req.params;
-    const { action } = req.body;
-    let status
-    if (action === "accepted") {
-        status = "accepted"
-    } else if (action === "rejected") {
-        status = "rejected"
-    } else {
-        res.status(404).json({ error: "Invalid action" });
-        return
-    }
+
+// Get applications belonging to the authenticated user
+router.get("/", verifyUser, async (req, res) => {
     try {
-        const updateapplication = await application.findByIdAndUpdate(
-            id,
-            { $set: { status } },
-            { new: true }
+        const uid = req.user?.uid;
+
+        if (!uid) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        console.log("[GET /api/application] Authenticated UID:", uid);
+
+        const applications = await Application.find({
+            firebaseUid: uid,
+        }).sort({ createAt: -1 });
+
+        console.log(
+            "[GET /api/application] Returned IDs:",
+            applications.map((app) => app._id.toString())
         );
-        if (!updateapplication) {
-            res.status(404).json({ error: " Not able to update the application" });
-            return;
-        } res.status(200).json({ success: true, data: updateapplication });
+
+        return res.status(200).json({
+            success: true,
+            applications,
+        });
     } catch (error) {
-        res.status(500).json({ error: "internal server error" })
+        console.error("Fetch applications error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch applications",
+        });
     }
-})
+});
+
+// Get one application:
+// Only its owner or an admin can access it.
+router.get("/:id", verifyUser, async (req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                error: "Invalid application ID",
+            });
+        }
+
+        const filter = {
+            _id: req.params.id,
+        };
+
+        if (req.user.admin !== true) {
+            filter.$or = [
+                { firebaseUid: req.user.uid },
+                { "user.uid": req.user.uid },
+            ];
+        }
+
+        const data = await Application.findOne(filter);
+
+        if (!data) {
+            return res.status(404).json({
+                error: "Application not found",
+            });
+        }
+
+        const ownerUid =
+            data.firebaseUid || data.user?.uid;
+
+        const resume = data.resumeId && ownerUid
+            ? await Resume.findOne({
+                _id: data.resumeId,
+                firebaseUid: ownerUid,
+            })
+            : null;
+
+        return res.status(200).json({
+            ...data.toObject(),
+            resumeTitle:
+                resume?.title || data.resumeTitle || "",
+            resumePdfUrl: resume?.pdfUrl || null,
+        });
+    } catch (error) {
+        console.error("Get application error:", error);
+
+        return res.status(500).json({
+            error: "Internal server error",
+        });
+    }
+});
+
+// Accept or reject an application — admin only
+router.put("/:id", verifyUser, verifyAdmin, async (req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                error: "Invalid application ID",
+            });
+        }
+
+        const { action } = req.body || {};
+
+        if (!["accepted", "rejected"].includes(action)) {
+            return res.status(400).json({
+                error: "Invalid action",
+            });
+        }
+
+        const updated = await Application.findByIdAndUpdate(
+            req.params.id,
+            { $set: { status: action } },
+            {
+                new: true,
+                runValidators: true,
+            }
+        );
+
+        if (!updated) {
+            return res.status(404).json({
+                error: "Application not found",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Update application error:", error);
+
+        return res.status(500).json({
+            error: "Internal server error",
+        });
+    }
+});
+
 module.exports = router;

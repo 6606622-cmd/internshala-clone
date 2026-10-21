@@ -1,18 +1,42 @@
-const mongoose=require("mongoose")
-const ApplicationSchema=new mongoose.Schema({
-     company: String,
+
+const mongoose = require("mongoose");
+
+const ApplicationSchema = new mongoose.Schema({
+    company: String,
     category: String,
-    coverLetter:String,
+    coverLetter: String,
     user: Object,
-    createAt: {
-        type:Date,
-        default :Date.now,
+
+    resumeId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Resume",
+        default: null,
     },
-    status:{
-        type:String,
-        enum:["accepted","pending","rejected"],
-        default:"pending",
+    resumeTitle: {
+        type: String,
+        default: "",
+    },
+    availability: String,
+
+    createAt: {
+        type: Date,
+        default: Date.now,
+    },
+    status: {
+        type: String,
+        enum: ["accepted", "pending", "rejected"],
+        default: "pending",
     },
     Application: Object,
-})
-module.exports=mongoose.model("Application",ApplicationSchema)
+
+    firebaseUid: {
+        type: String,
+        required: true,
+        index: true,
+    },
+
+});
+
+module.exports =
+    mongoose.models.Application ||
+    mongoose.model("Application", ApplicationSchema);

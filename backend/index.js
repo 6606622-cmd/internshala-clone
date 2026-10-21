@@ -1,3 +1,4 @@
+require("dotenv").config();
 const bodyparser = require("body-parser");
 const express = require("express");
 const app = express();
@@ -14,6 +15,16 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("hello this is internshala backend");
 });
+
+app.use((req, res, next) => {
+    console.log(
+        "[SERVER REQUEST]",
+        req.method,
+        req.originalUrl
+    );
+    next();
+});
+
 app.use("/api", router);
 connect();
 app.use((req, res, next) => {
