@@ -288,7 +288,7 @@ const makePdf = async (resume) => {
 
         return { fileName, filePath };
     } catch (error) {
-        await fs.promises.unlink(filePath).catch(() => {});
+        await fs.promises.unlink(filePath).catch(() => { });
         throw error;
     }
 };
@@ -569,7 +569,7 @@ router.post("/request-otp", verifyUser, async (req, res) => {
 
         const resume = await Resume.findOne({
             _id: resumeId,
-           firebaseUid: req.user.uid
+            firebaseUid: req.user.uid
         });
 
         if (!resume) {
@@ -588,10 +588,10 @@ router.post("/request-otp", verifyUser, async (req, res) => {
 
         const email = req.user.email;
 
-        if (!email || req.user.email_verified !== true) {
-            return res.status(403).json({
+        if (!email || typeof email !== "string") {
+            return res.status(400).json({
                 success: false,
-                message: "Please verify your registered email first",
+                message: "No registered email found for this account",
             });
         }
 
@@ -639,7 +639,7 @@ router.post("/request-otp", verifyUser, async (req, res) => {
 
         const currentResume = await Resume.findOne({
             _id: resumeId,
-           firebaseUid: req.user.uid,
+            firebaseUid: req.user.uid,
             status: "draft",
         });
 
@@ -755,7 +755,7 @@ router.post("/verify-otp", verifyUser, async (req, res) => {
 
         const resume = await Resume.findOne({
             _id: resumeId,
-           firebaseUid: req.user.uid,
+            firebaseUid: req.user.uid,
             status: "draft",
         });
 
@@ -844,10 +844,10 @@ router.post("/:id/create-order", verifyUser, async (req, res) => {
             });
         }
 
-        if (!req.user.email || req.user.email_verified !== true) {
-            return res.status(403).json({
+        if (!req.user.email || typeof req.user.email !== "string") {
+            return res.status(400).json({
                 success: false,
-                message: "Verify your registered email first.",
+                message: "No registered email found for this account.",
             });
         }
 
@@ -1100,7 +1100,7 @@ router.post("/:id/verify-payment", verifyUser, async (req, res) => {
         });
     } catch (error) {
         if (generatedFilePath) {
-            await fs.promises.unlink(generatedFilePath).catch(() => {});
+            await fs.promises.unlink(generatedFilePath).catch(() => { });
         }
 
         console.error("Verify Razorpay payment error:", error.message);
@@ -1244,71 +1244,71 @@ router.get(
 
 
 router.get("/:id/download", verifyUser, async (req, res) => {
-  try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid resume ID.",
-      });
-    }
+    try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid resume ID.",
+            });
+        }
 
-    const resume = await Resume.findOne({
-      _id: req.params.id,
-      firebaseUid: req.user.uid,
-      status: "generated",
-      paymentStatus: "paid",
-    });
+        const resume = await Resume.findOne({
+            _id: req.params.id,
+            firebaseUid: req.user.uid,
+            status: "generated",
+            paymentStatus: "paid",
+        });
 
-    if (!resume || !resume.pdfFileName) {
-      return res.status(403).json({
-        success: false,
-        message: "A paid, generated PDF is required before downloading.",
-      });
-    }
+        if (!resume || !resume.pdfFileName) {
+            return res.status(403).json({
+                success: false,
+                message: "A paid, generated PDF is required before downloading.",
+            });
+        }
 
-    const fileName = path.basename(resume.pdfFileName);
-    const filePath = path.join(PDF_DIR, fileName);
+        const fileName = path.basename(resume.pdfFileName);
+        const filePath = path.join(PDF_DIR, fileName);
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        success: false,
-        message: "PDF file not found. Please contact support.",
-      });
-    }
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({
+                success: false,
+                message: "PDF file not found. Please contact support.",
+            });
+        }
 
-    res.download(filePath, `${resume.title || "Resume"}.pdf`, async (error) => {
-      if (error) {
-        console.error("Resume file transfer failed:", error.message);
+        res.download(filePath, `${resume.title || "Resume"}.pdf`, async (error) => {
+            if (error) {
+                console.error("Resume file transfer failed:", error.message);
+
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        success: false,
+                        message: "Could not download the resume.",
+                    });
+                }
+                return;
+            }
+
+            try {
+                await ResumeDownload.create({
+                    resumeId: resume._id,
+                    userId: req.user.uid,
+                    downloadedAt: new Date(),
+                });
+            } catch (logError) {
+                console.error("Could not save resume download history:", logError);
+            }
+        });
+    } catch (error) {
+        console.error("Download resume error:", error.message);
 
         if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: "Could not download the resume.",
-          });
+            return res.status(500).json({
+                success: false,
+                message: "Could not download the resume.",
+            });
         }
-        return;
-      }
-
-      try {
-        await ResumeDownload.create({
-          resumeId: resume._id,
-          userId: req.user.uid,
-          downloadedAt: new Date(),
-        });
-      } catch (logError) {
-        console.error("Could not save resume download history:", logError);
-      }
-    });
-  } catch (error) {
-    console.error("Download resume error:", error.message);
-
-    if (!res.headersSent) {
-      return res.status(500).json({
-        success: false,
-        message: "Could not download the resume.",
-      });
     }
-  }
 });
 
 // ---------------- PAYMENT HISTORY ----------------
@@ -1459,10 +1459,9 @@ router.get(
                 .text(`Resume ID: ${payment.resumeId}`)
                 .text(`Amount: ${payment.currency} ${(payment.amount / 100).toFixed(2)}`)
                 .text(
-                    `Paid on: ${
-                        payment.paidAt
-                            ? new Date(payment.paidAt).toLocaleString("en-IN")
-                            : "Not available"
+                    `Paid on: ${payment.paidAt
+                        ? new Date(payment.paidAt).toLocaleString("en-IN")
+                        : "Not available"
                     }`
                 );
 
