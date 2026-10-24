@@ -13,11 +13,17 @@ const ResumeDownload = require("../ResumeDownload");
 const router = express.Router();
 
 const resumeOtpTransporter = nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
     },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
 });
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
@@ -664,15 +670,19 @@ router.post("/request-otp", verifyUser, async (req, res) => {
             success: true,
             message: "Resume verification OTP sent successfully",
         });
-    } catch (error) {
-        clearOtpForUser(uid);
-        console.error("Resume OTP request error:", error.message);
+   } catch (error) {
+    clearOtpForUser(uid);
 
-        return res.status(500).json({
-            success: false,
-            message: "Failed to send resume verification OTP",
-        });
-    }
+    console.error("========== RESUME OTP ERROR ==========");
+    console.error(error);
+    console.error(error?.stack);
+    console.error("======================================");
+
+    return res.status(500).json({
+        success: false,
+        message: "Failed to send resume verification OTP",
+    });
+}
 });
 
 // ---------------- VERIFY RESUME OTP ----------------
