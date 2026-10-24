@@ -6,7 +6,7 @@ const adminApp = require("../../firebaseAdmin");
 
 const router = express.Router();
 const Application = require("../Application");
-const Resume = require("../../Model/Resume");
+const Resume = require("../Resume");
 
 // Verify Firebase authentication
 const verifyUser = async (req, res, next) => {
@@ -140,10 +140,13 @@ router.post("/", verifyUser, async (req, res) => {
     }
 });
 
-// Get applications belonging to the authenticated user
+// Get all applications:
+// Normal users see only their own applications.
+// Admins can see all applications.
+
 router.get("/", verifyUser, async (req, res) => {
     try {
-        const uid = req.user?.uid;
+        const uid = req.user.uid;
 
         if (!uid) {
             return res.status(401).json({
@@ -152,16 +155,17 @@ router.get("/", verifyUser, async (req, res) => {
             });
         }
 
-        console.log("[GET /api/application] Authenticated UID:", uid);
+        console.log("Applications request UID:", uid);
 
-        const applications = await Application.find({
-            firebaseUid: uid,
-        }).sort({ createAt: -1 });
-
-        console.log(
-            "[GET /api/application] Returned IDs:",
-            applications.map((app) => app._id.toString())
-        );
+       const applications =
+    req.user.admin === true
+        ? await Application.find({}).sort({ createdAt: -1 })
+        : await Application.find({
+              $or: [
+                  { firebaseUid: req.user.uid },
+                  { "user.uid": req.user.uid },
+              ],
+          }).sort({ createdAt: -1 });
 
         return res.status(200).json({
             success: true,
@@ -176,6 +180,8 @@ router.get("/", verifyUser, async (req, res) => {
         });
     }
 });
+
+
 
 // Get one application:
 // Only its owner or an admin can access it.
@@ -231,20 +237,29 @@ router.get("/:id", verifyUser, async (req, res) => {
     }
 });
 
-// Accept or reject an application — admin only
+
+ // Accept or reject an application — admin only
 router.put("/:id", verifyUser, verifyAdmin, async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
             return res.status(400).json({
+                success: false,
                 error: "Invalid application ID",
             });
         }
 
         const { action } = req.body || {};
 
+        console.log("Application approval request:", {
+            applicationId: req.params.id,
+            action,
+            adminUid: req.user?.uid,
+        });
+
         if (!["accepted", "rejected"].includes(action)) {
             return res.status(400).json({
-                error: "Invalid action",
+                success: false,
+                error: "Invalid action. Use accepted or rejected.",
             });
         }
 
@@ -259,21 +274,30 @@ router.put("/:id", verifyUser, verifyAdmin, async (req, res) => {
 
         if (!updated) {
             return res.status(404).json({
+                success: false,
                 error: "Application not found",
             });
         }
 
+        console.log("Application update result:", {
+            id: updated._id.toString(),
+            status: updated.status,
+        });
+
         return res.status(200).json({
             success: true,
+            message: `Application ${action} successfully`,
             data: updated,
         });
     } catch (error) {
         console.error("Update application error:", error);
 
         return res.status(500).json({
+            success: false,
             error: "Internal server error",
         });
     }
 });
+
 
 module.exports = router;

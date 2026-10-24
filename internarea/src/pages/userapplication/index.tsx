@@ -1,47 +1,14 @@
-import { selectuser } from '@/Feature/Userslice';
 import axios from 'axios';
-import { Calendar, CheckCircle2, Search, Tag, User, XCircle } from 'lucide-react';
-import React, { useEffect, useState } from 'react'
-import { useSelector } from 'react-redux';
+import { Calendar, Search, Tag, User } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { useLanguage } from '../../../context/LanguageContext';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '@/firebase/firebase';
 
-const Applications = [
-    {
-        _id: "1",
-        company: "Tech Corp",
-        category: "Software",
-        user: {
-            name: "John Doe",
-            email: "john@example.com",
-        },
-        createAt: "2024-03-10T12:00:00Z",
-        status: "approved",
-    },
-    {
-        _id: "2",
-        company: "Health Solutions",
-        category: "Healthcare",
-        user: {
-            name: "Rahul",
-            email: "jane@example.com",
-        },
-        createAt: "2024-03-08T10:30:00Z",
-        status: "pending",
-    },
-    {
-        _id: "3",
-        company: "EduLearn",
-        category: "Education",
-        user: {
-            name: "Alice Johnson",
-            email: "alice@example.com",
-        },
-        createAt: "2024-03-05T09:15:00Z",
-        status: "rejected",
-    },
-];
 
-const getStatusColor = (status: string) => {
+const getStatusColor = (status: string = "") => {
     switch (status.toLowerCase()) {
+        case "accepted":
         case "approved":
             return "bg-green-100 text-green-700 border border-green-200";
 
@@ -53,41 +20,236 @@ const getStatusColor = (status: string) => {
     }
 };
 
+
 const index = () => {
     const [searchTerm, setSearchTerm] = useState("");
     const [filter, setFilter] = useState("all");
-    const user=useSelector(selectuser)
-   {/* const [isUser, setIsUser] = useState<any>({
-        name: "Rahul",
-        email: "xyz@gmail.com",
-        photo:
-            "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=64&h=64&fit=crop&crop=faces",
-    });*/}
-  
-    const [data, setdata] = useState<any>([])
-  useEffect(() => {
-    const fetchdata = async () => {
-      try {
-        const res = await axios.get(`https://internshala-clone-a0st.onrender.com/api/application`)
-        setdata(res.data)
-      } catch (error) {
-        console.log(error)
-      }
-    }
-    fetchdata()
-  }, [])
-    const userapplication = data.filter((app:any) => app.user?.name === user?.name);
-    const filteredapplications = userapplication.filter((application:any) => {
+
+    const { language } = useLanguage();
+
+    const text: any = {
+        en: {
+            title: "My Applications",
+            subtitle: "Track and manage your job and internship applications",
+            search: "Search by company, category, or applicant...",
+            all: "All",
+            pending: "Pending",
+            approved: "Approved",
+            rejected: "Rejected",
+            company: "Company",
+            category: "Category",
+            applicant: "Applicant",
+            appliedOn: "Applied On",
+            status: "Status",
+            applicationId: "Application ID",
+            noApplications: "No applications found",
+            tryChanging: "Try changing your search or filter.",
+            showing: "Showing",
+            application: "application",
+            applications: "applications",
+        },
+        es: {
+            title: "Mis solicitudes",
+            subtitle: "Realiza un seguimiento y gestiona tus solicitudes de empleo y prácticas",
+            search: "Buscar por empresa, categoría o solicitante...",
+            all: "Todas",
+            pending: "Pendientes",
+            approved: "Aprobadas",
+            rejected: "Rechazadas",
+            company: "Empresa",
+            category: "Categoría",
+            applicant: "Solicitante",
+            appliedOn: "Solicitado el",
+            status: "Estado",
+            applicationId: "ID de solicitud",
+            noApplications: "No se encontraron solicitudes",
+            tryChanging: "Intenta cambiar tu búsqueda o filtro.",
+            showing: "Mostrando",
+            application: "solicitud",
+            applications: "solicitudes",
+        },
+        hi: {
+            title: "मेरे आवेदन",
+            subtitle: "अपने नौकरी और इंटर्नशिप आवेदनों को ट्रैक और प्रबंधित करें",
+            search: "कंपनी, श्रेणी या आवेदक द्वारा खोजें...",
+            all: "सभी",
+            pending: "लंबित",
+            approved: "स्वीकृत",
+            rejected: "अस्वीकृत",
+            company: "कंपनी",
+            category: "श्रेणी",
+            applicant: "आवेदक",
+            appliedOn: "आवेदन की तारीख",
+            status: "स्थिति",
+            applicationId: "आवेदन आईडी",
+            noApplications: "कोई आवेदन नहीं मिला",
+            tryChanging: "अपनी खोज या फ़िल्टर बदलने का प्रयास करें।",
+            showing: "दिखाए जा रहे हैं",
+            application: "आवेदन",
+            applications: "आवेदन",
+        },
+        pt: {
+            title: "Minhas candidaturas",
+            subtitle: "Acompanhe e gerencie suas candidaturas a empregos e estágios",
+            search: "Pesquisar por empresa, categoria ou candidato...",
+            all: "Todas",
+            pending: "Pendentes",
+            approved: "Aprovadas",
+            rejected: "Rejeitadas",
+            company: "Empresa",
+            category: "Categoria",
+            applicant: "Candidato",
+            appliedOn: "Candidatou-se em",
+            status: "Estado",
+            applicationId: "ID da candidatura",
+            noApplications: "Nenhuma candidatura encontrada",
+            tryChanging: "Tente alterar a sua pesquisa ou filtro.",
+            showing: "A mostrar",
+            application: "candidatura",
+            applications: "candidaturas",
+        },
+        zh: {
+            title: "我的申请",
+            subtitle: "跟踪和管理您的工作和实习申请",
+            search: "按公司、类别或申请人搜索...",
+            all: "全部",
+            pending: "待处理",
+            approved: "已批准",
+            rejected: "已拒绝",
+            company: "公司",
+            category: "类别",
+            applicant: "申请人",
+            appliedOn: "申请日期",
+            status: "状态",
+            applicationId: "申请编号",
+            noApplications: "未找到申请",
+            tryChanging: "请尝试更改搜索或筛选条件。",
+            showing: "显示",
+            application: "个申请",
+            applications: "个申请",
+        },
+        fr: {
+            title: "Mes candidatures",
+            subtitle: "Suivez et gérez vos candidatures à des emplois et des stages",
+            search: "Rechercher par entreprise, catégorie ou candidat...",
+            all: "Toutes",
+            pending: "En attente",
+            approved: "Approuvées",
+            rejected: "Rejetées",
+            company: "Entreprise",
+            category: "Catégorie",
+            applicant: "Candidat",
+            appliedOn: "Date de candidature",
+            status: "Statut",
+            applicationId: "ID de candidature",
+            noApplications: "Aucune candidature trouvée",
+            tryChanging: "Essayez de modifier votre recherche ou votre filtre.",
+            showing: "Affichage de",
+            application: "candidature",
+            applications: "candidatures",
+        },
+    };
+
+    const t = text[language] || text.en;
+
+
+
+    const [data, setdata] = useState<any[]>([]);
+
+    useEffect(() => {
+        let active = true;
+        let requestId = 0;
+
+        const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+            const thisRequest = ++requestId;
+
+            // Clear data immediately whenever the auth state changes.
+            setdata([]);
+
+            if (!currentUser) {
+                return;
+            }
+
+            try {
+                const token = await currentUser.getIdToken();
+
+                const res = await axios.get(
+                    "https://internshala-clone-a0st.onrender.com/api/application",
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                        },
+                    }
+                );
+
+                if (
+                    !active ||
+                    thisRequest !== requestId ||
+                    auth.currentUser?.uid !== currentUser.uid
+                ) {
+                    return;
+                }
+
+                // Supports both backend response formats:
+                // 1. [application, ...]
+                // 2. { success: true, applications: [...] }
+                const applications = Array.isArray(res.data)
+                    ? res.data
+                    : Array.isArray(res.data?.applications)
+                        ? res.data.applications
+                        : [];
+                console.table(
+                    applications.map((app: any) => ({
+                        id: app._id || app.id,
+                        company: app.company,
+                        status: JSON.stringify(app.status),
+                    }))
+                );
+                setdata(applications);
+            } catch (error) {
+                if (
+                    active &&
+                    thisRequest === requestId &&
+                    auth.currentUser?.uid === currentUser.uid
+                ) {
+                    console.error("Error fetching applications:", error);
+                    setdata([]);
+                }
+            }
+        });
+
+        return () => {
+            active = false;
+            unsubscribe();
+        };
+    }, []);
+
+    const userapplication = data;
+
+
+
+    const filteredapplications = userapplication.filter((application: any) => {
+        const company = (application.company || "").toLowerCase();
+        const category = (application.category || "").toLowerCase();
+
         const searchMatch =
-            application.company
-                .toLowerCase()
-                .includes(searchTerm.toLowerCase()) ||
-            application.category
-                .toLowerCase()
-                .includes(searchTerm.toLowerCase());
+            company.includes(searchTerm.toLowerCase()) ||
+            category.includes(searchTerm.toLowerCase());
+
         if (filter === "all") return searchMatch;
-        return searchMatch && application.status.toLowerCase() === filter;
+
+        const status = String(application.status || "pending")
+            .trim()
+            .toLowerCase();
+
+        if (filter === "approved") {
+            return searchMatch &&
+                (status === "accepted" || status === "approved");
+        }
+
+        return searchMatch && status === filter;
     });
+
 
     return (
         <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -99,11 +261,11 @@ const index = () => {
                     {/* ================= HEADER ================= */}
                     <div className="px-6 py-6 border-b border-gray-200">
                         <h1 className="text-2xl font-bold text-gray-900">
-                           My Applications
+                            {t.title}
                         </h1>
 
                         <p className="mt-1 text-sm text-gray-500">
-                           Track and manage your job and internship applications
+                            {t.subtitle}
                         </p>
                     </div>
 
@@ -126,7 +288,7 @@ const index = () => {
                                         onChange={(e) =>
                                             setSearchTerm(e.target.value)
                                         }
-                                        placeholder="Search by company, category, or applicant..."
+                                        placeholder={t.search}
                                         className="w-full h-10 pl-10 pr-4 text-sm text-gray-900 bg-white border border-gray-300 rounded-lg outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                     />
 
@@ -143,7 +305,7 @@ const index = () => {
                                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                                         }`}
                                 >
-                                    All
+                                    {t.all}
                                 </button>
 
                                 <button
@@ -153,7 +315,7 @@ const index = () => {
                                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                                         }`}
                                 >
-                                    Pending
+                                    {t.pending}
                                 </button>
 
                                 <button
@@ -163,7 +325,7 @@ const index = () => {
                                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                                         }`}
                                 >
-                                    Approved
+                                    {t.approved}
                                 </button>
 
                                 <button
@@ -173,7 +335,7 @@ const index = () => {
                                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                                         }`}
                                 >
-                                    Rejected
+                                    {t.rejected}
                                 </button>
 
                             </div>
@@ -190,23 +352,23 @@ const index = () => {
                                 <tr>
 
                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        Company
+                                        {t.company}
                                     </th>
 
                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        Category
+                                        {t.category}
                                     </th>
 
                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        Applicant
+                                        {t.applicant}
                                     </th>
 
                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        Applied On
+                                        {t.appliedOn}
                                     </th>
 
                                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        Status
+                                        {t.status}
                                     </th>
 
                                 </tr>
@@ -216,7 +378,7 @@ const index = () => {
                             <tbody className="divide-y divide-gray-100 bg-white">
 
                                 {filteredapplications.length > 0 ? (
-                                    filteredapplications.map((application:any) => (
+                                    filteredapplications.map((application: any) => (
                                         <tr
                                             key={application._id}
                                             className="hover:bg-gray-50 transition"
@@ -230,7 +392,7 @@ const index = () => {
                                                     </p>
 
                                                     <p className="text-xs text-gray-500 mt-1">
-                                                        Application ID: {application._id}
+                                                        {t.applicationId}: {application._id}
                                                     </p>
                                                 </div>
                                             </td>
@@ -262,11 +424,11 @@ const index = () => {
 
                                                     <div>
                                                         <p className="text-sm font-medium text-gray-900">
-                                                            {application.user.name}
+                                                            {application.user?.name || "Unknown User"}
                                                         </p>
 
                                                         <p className="text-xs text-gray-500 mt-0.5">
-                                                            {application.user.email}
+                                                            {application.user?.email || "No email available"}
                                                         </p>
                                                     </div>
 
@@ -283,9 +445,12 @@ const index = () => {
                                                     />
 
                                                     <span>
-                                                        {new Date(application.createAt)
-                                                            .toISOString()
-                                                            .split("T")[0]}
+                                                        {application.createdAt || application.createAt
+                                                            ? new Date(
+                                                                application.createdAt || application.createAt
+                                                            ).toLocaleDateString()
+                                                            : "N/A"}
+
                                                     </span>
 
                                                 </div>
@@ -298,7 +463,11 @@ const index = () => {
                                                         application.status
                                                     )}`}
                                                 >
-                                                    {application.status}
+                                                    {application.status === "accepted" || application.status === "approved"
+                                                        ? t.approved
+                                                        : application.status === "rejected"
+                                                            ? t.rejected
+                                                            : t.pending}
                                                 </span>
                                             </td>
 
@@ -320,11 +489,11 @@ const index = () => {
                                                 />
 
                                                 <p className="text-sm font-medium">
-                                                    No applications found
+                                                    {t.noApplications}
                                                 </p>
 
                                                 <p className="text-xs mt-1 text-gray-400">
-                                                    Try changing your search or filter.
+                                                    {t.tryChanging}
                                                 </p>
 
                                             </div>
@@ -341,12 +510,13 @@ const index = () => {
                     {/* ================= FOOTER ================= */}
                     <div className="px-6 py-4 bg-gray-50 border-t border-gray-200">
                         <p className="text-sm text-gray-500">
-                            Showing{" "}
+                            {t.showing}{" "}
                             <span className="font-medium text-gray-700">
                                 {filteredapplications.length}
                             </span>{" "}
-                            application
-                            {filteredapplications.length !== 1 ? "s" : ""}
+                            {filteredapplications.length !== 1
+                                ? t.applications
+                                : t.application}
                         </p>
                     </div>
 

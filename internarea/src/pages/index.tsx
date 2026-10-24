@@ -10,10 +10,12 @@ import {
   MapPin,
   Banknote,
   Calendar,
-  Book,
+  Briefcase,
 } from "lucide-react";
 import Link from "next/link";
 import axios from "axios";
+
+
 
 export default function SvgSlider() {
   const categories = [
@@ -159,6 +161,26 @@ useEffect(() => {
         <p className="text-xl text-gray-600">
           Trending on InternArea 🔥
         </p>
+      </div>
+
+      
+      {/* Resume Builder Section */}
+      <div className="text-center mb-12 rounded-xl bg-blue-50 p-8">
+        <h2 className="text-2xl font-bold text-gray-900 mb-3">
+          Create Your Professional Resume
+        </h2>
+
+        <p className="text-gray-600 mb-5">
+          Build an ATS-friendly resume and get ready for your next opportunity.
+        </p>
+
+        <Link
+          href="/resumebuilder"
+          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white transition hover:bg-blue-700"
+        >
+          Build Your Resume
+          <ArrowUpRight size={20} />
+        </Link>
       </div>
 
       {/* Swiper section */}
@@ -399,7 +421,7 @@ useEffect(() => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Book size={18} />
+                  <Briefcase size={18} />
                   <span>{job.category}</span>
                 </div>
               </div>

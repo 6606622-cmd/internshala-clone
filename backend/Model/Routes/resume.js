@@ -624,47 +624,47 @@ router.post("/request-otp", verifyUser, async (req, res) => {
         // Invalidate any earlier challenge before issuing a new one.
         clearOtpForUser(uid);
 
-       const brevoResponse = await fetch(
-    "https://api.brevo.com/v3/smtp/email",
-    {
-        method: "POST",
-        headers: {
-            "accept": "application/json",
-            "api-key": process.env.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        body: JSON.stringify({
-            sender: {
-                name: "Internarea",
-                email: process.env.BREVO_SENDER_EMAIL,
-            },
-            to: [
-                {
-                    email: email,
+        const brevoResponse = await fetch(
+            "https://api.brevo.com/v3/smtp/email",
+            {
+                method: "POST",
+                headers: {
+                    "accept": "application/json",
+                    "api-key": process.env.BREVO_API_KEY,
+                    "content-type": "application/json",
                 },
-            ],
-            subject: "Internarea - Resume Verification",
-            textContent:
-                `Your resume verification code is ${otp}. ` +
-                "It expires in 5 minutes. If you did not request this code, ignore this email.",
-        }),
-        signal: AbortSignal.timeout(15000),
-    }
-);
+                body: JSON.stringify({
+                    sender: {
+                        name: "Internarea",
+                        email: process.env.BREVO_SENDER_EMAIL,
+                    },
+                    to: [
+                        {
+                            email: email,
+                        },
+                    ],
+                    subject: "Internarea - Resume Verification",
+                    textContent:
+                        `Your resume verification code is ${otp}. ` +
+                        "It expires in 5 minutes. If you did not request this code, ignore this email.",
+                }),
+                signal: AbortSignal.timeout(15000),
+            }
+        );
 
-if (!brevoResponse.ok) {
-    const errorDetails = await brevoResponse.text();
+        if (!brevoResponse.ok) {
+            const errorDetails = await brevoResponse.text();
 
-    console.error(
-        "Brevo resume OTP email failed:",
-        brevoResponse.status,
-        errorDetails
-    );
+            console.error(
+                "Brevo resume OTP email failed:",
+                brevoResponse.status,
+                errorDetails
+            );
 
-    throw new Error(
-        `Brevo email request failed with status ${brevoResponse.status}`
-    );
-}
+            throw new Error(
+                `Brevo email request failed with status ${brevoResponse.status}`
+            );
+        }
 
         const currentResume = await Resume.findOne({
             _id: resumeId,
