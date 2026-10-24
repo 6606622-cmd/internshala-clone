@@ -12,19 +12,7 @@ const ResumeDownload = require("../ResumeDownload");
 
 const router = express.Router();
 
-const resumeOtpTransporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-    },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-});
+
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const OTP_RESEND_MS = 60 * 1000;
@@ -601,13 +589,15 @@ router.post("/request-otp", verifyUser, async (req, res) => {
             });
         }
 
-        if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        if (
+            !process.env.BREVO_API_KEY ||
+            !process.env.BREVO_SENDER_EMAIL
+        ) {
             return res.status(500).json({
                 success: false,
                 message: "Email service is not configured",
             });
         }
-
         const now = Date.now();
         const lastRequestedAt = otpRequestStore.get(uid);
 
@@ -634,14 +624,47 @@ router.post("/request-otp", verifyUser, async (req, res) => {
         // Invalidate any earlier challenge before issuing a new one.
         clearOtpForUser(uid);
 
-        await resumeOtpTransporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: email,
+       const brevoResponse = await fetch(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+        method: "POST",
+        headers: {
+            "accept": "application/json",
+            "api-key": process.env.BREVO_API_KEY,
+            "content-type": "application/json",
+        },
+        body: JSON.stringify({
+            sender: {
+                name: "Internarea",
+                email: process.env.BREVO_SENDER_EMAIL,
+            },
+            to: [
+                {
+                    email: email,
+                },
+            ],
             subject: "Internarea - Resume Verification",
-            text:
+            textContent:
                 `Your resume verification code is ${otp}. ` +
                 "It expires in 5 minutes. If you did not request this code, ignore this email.",
-        });
+        }),
+        signal: AbortSignal.timeout(15000),
+    }
+);
+
+if (!brevoResponse.ok) {
+    const errorDetails = await brevoResponse.text();
+
+    console.error(
+        "Brevo resume OTP email failed:",
+        brevoResponse.status,
+        errorDetails
+    );
+
+    throw new Error(
+        `Brevo email request failed with status ${brevoResponse.status}`
+    );
+}
 
         const currentResume = await Resume.findOne({
             _id: resumeId,
@@ -670,19 +693,19 @@ router.post("/request-otp", verifyUser, async (req, res) => {
             success: true,
             message: "Resume verification OTP sent successfully",
         });
-   } catch (error) {
-    clearOtpForUser(uid);
+    } catch (error) {
+        clearOtpForUser(uid);
 
-    console.error("========== RESUME OTP ERROR ==========");
-    console.error(error);
-    console.error(error?.stack);
-    console.error("======================================");
+        console.error("========== RESUME OTP ERROR ==========");
+        console.error(error);
+        console.error(error?.stack);
+        console.error("======================================");
 
-    return res.status(500).json({
-        success: false,
-        message: "Failed to send resume verification OTP",
-    });
-}
+        return res.status(500).json({
+            success: false,
+            message: "Failed to send resume verification OTP",
+        });
+    }
 });
 
 // ---------------- VERIFY RESUME OTP ----------------
