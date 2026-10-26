@@ -217,4 +217,32 @@ router.get("/requests/incoming", requireFirebaseAuth, async (req, res) => {
   }
 });
 
+
+// TEMPORARY: Debug friendship records for the signed-in user.
+router.get("/debug", requireFirebaseAuth, async (req, res) => {
+  try {
+    const uid = req.firebaseUser.uid;
+
+    const records = await Friendship.find({
+      $or: [{ userAUid: uid }, { userBUid: uid }],
+    })
+      .select(
+        "_id userAUid userBUid requestedByUid status createdAt"
+      )
+      .lean();
+
+    return res.json({
+      success: true,
+      uid,
+      count: records.length,
+      records,
+    });
+  } catch (error) {
+    console.error("Friendship debug error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Could not inspect friendship records.",
+    });
+  }
+});
 module.exports = router;
