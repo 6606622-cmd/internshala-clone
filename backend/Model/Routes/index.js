@@ -11,6 +11,8 @@ const language = require("./language");
 const resume = require("./resume");
 const resumePayment = require("./resumePayment");
 const forgotPassword = require("./forgotPassword");
+const publicSpaceFriendship = require("./publicSpaceFriendship");
+const publicSpacePost = require("./publicSpacePost");
 
 router.use("/admin", admin);
 router.use("/internship", intern);
@@ -20,5 +22,7 @@ router.use("/language", language);
 router.use("/resume", resume);
 router.use("/resume", resumePayment);
 router.use("/forgot-password", forgotPassword);
+router.use("/public-space/friendships", publicSpaceFriendship);
+router.use("/public-space/posts", publicSpacePost);
 
 module.exports = router;
