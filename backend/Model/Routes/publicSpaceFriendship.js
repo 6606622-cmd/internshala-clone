@@ -4,7 +4,10 @@ const router = express.Router();
 
 const Friendship = require("../PublicSpaceFriendship");
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
+const { getAuth } = require("firebase-admin/auth");
+const adminApp = require("../../firebaseAdmin");
 
+const firebaseAuth = getAuth(adminApp);
 // Keep the pair in a consistent order.
 function getPair(uid1, uid2) {
   return [uid1, uid2].sort();
@@ -23,6 +26,31 @@ router.post("/request/:targetUid", requireFirebaseAuth, async (req, res) => {
       });
     }
 
+    // Verify that the target is a real Firebase user.
+    try {
+ console.log("FRIEND REQUEST TARGET:", targetUid);
+
+const verifiedUser = await firebaseAuth.getUser(targetUid);
+
+console.log("VERIFIED FIREBASE USER:", verifiedUser.uid);
+    } catch (error) {
+      if (
+        error.code === "auth/user-not-found" ||
+        error.code === "auth/invalid-uid"
+      ) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found. Please select a registered user.",
+        });
+      }
+
+      console.error("Target user verification error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Could not verify the selected user.",
+      });
+    }
     const [userAUid, userBUid] = getPair(requesterUid, targetUid);
 
     const existing = await Friendship.findOne({ userAUid, userBUid });
@@ -217,32 +245,4 @@ router.get("/requests/incoming", requireFirebaseAuth, async (req, res) => {
   }
 });
 
-
-// TEMPORARY: Debug friendship records for the signed-in user.
-router.get("/debug", requireFirebaseAuth, async (req, res) => {
-  try {
-    const uid = req.firebaseUser.uid;
-
-    const records = await Friendship.find({
-      $or: [{ userAUid: uid }, { userBUid: uid }],
-    })
-      .select(
-        "_id userAUid userBUid requestedByUid status createdAt"
-      )
-      .lean();
-
-    return res.json({
-      success: true,
-      uid,
-      count: records.length,
-      records,
-    });
-  } catch (error) {
-    console.error("Friendship debug error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Could not inspect friendship records.",
-    });
-  }
-});
 module.exports = router;
