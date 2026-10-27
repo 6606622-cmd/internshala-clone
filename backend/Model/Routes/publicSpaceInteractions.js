@@ -66,6 +66,74 @@ async function findAvailablePost(postId, uid, res) {
   return post;
 }
 
+
+/**
+ * GET MY INTERACTION STATUS
+ * Example:
+ * /public-space/interactions/status?postIds=id1,id2,id3
+ *
+ * Returns the current user's liked and saved post IDs.
+ */
+router.get(
+  "/status",
+  asyncHandler(async (req, res) => {
+    const rawPostIds =
+      typeof req.query.postIds === "string"
+        ? req.query.postIds
+        : "";
+
+    const postIds = [
+      ...new Set(
+        rawPostIds
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean)
+      ),
+    ];
+
+    if (postIds.length > 100) {
+      return res.status(400).json({
+        message: "Maximum 100 post IDs per request.",
+      });
+    }
+
+    if (postIds.some((id) => !validId(id))) {
+      return res.status(400).json({
+        message: "One or more post IDs are invalid.",
+      });
+    }
+
+    if (postIds.length === 0) {
+      return res.json({
+        likedPostIds: [],
+        savedPostIds: [],
+      });
+    }
+
+    const interactions = await PublicSpaceInteraction.find({
+      userUid: req.user.uid,
+      postId: { $in: postIds },
+      type: { $in: ["like", "save"] },
+    })
+      .select("postId type")
+      .lean();
+
+    const likedPostIds = interactions
+      .filter((item) => item.type === "like")
+      .map((item) => String(item.postId));
+
+    const savedPostIds = interactions
+      .filter((item) => item.type === "save")
+      .map((item) => String(item.postId));
+
+    res.json({
+      likedPostIds,
+      savedPostIds,
+    });
+  })
+);
+
+
 // LIKE / UNLIKE
 router.post(
   "/:postId/like",
