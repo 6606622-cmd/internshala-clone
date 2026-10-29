@@ -89,6 +89,34 @@ async function createNotification({
   }
 }
 
+async function findAvailablePost(postId, uid, res) {
+  if (!validId(postId)) {
+    res.status(400).json({ message: "Invalid post ID." });
+    return null;
+  }
+
+  const post = await PublicSpacePost.findOne({
+    _id: postId,
+    isDeleted: false,
+  });
+
+  if (!post) {
+    res.status(404).json({ message: "Post not found." });
+    return null;
+  }
+
+  // Public posts and the current user's own posts are available.
+  // Friends-only access will be added in the feed/privacy upgrade.
+  if (post.privacy !== "public" && post.authorUid !== uid) {
+    res.status(403).json({
+      message: "You cannot interact with this private post.",
+    });
+    return null;
+  }
+
+  return post;
+}
+
 // GET MY INTERACTION STATUS
 router.get(
   "/status",
