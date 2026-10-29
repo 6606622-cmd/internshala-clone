@@ -1,10 +1,16 @@
 
 const express = require("express");
+const mongoose = require("mongoose");
+const { getAuth } = require("firebase-admin/auth");
+
 const router = express.Router();
 
 const Post = require("../PublicSpacePost");
 const Friendship = require("../PublicSpaceFriendship");
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
+const adminApp = require("../../firebaseAdmin");
+
+const firebaseAuth = getAuth(adminApp);
 
 const EDIT_WINDOW_MINUTES = Math.max(
   1,
@@ -31,12 +37,69 @@ function getMediaType(text, media) {
 
 function getUtcDayStart() {
   const now = new Date();
+
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
   );
 }
 
-// Count accepted friends using server-side records.
+function extractHashtags(text) {
+  return [
+    ...new Set(
+      (text.match(/#[\p{L}\p{N}_]+/gu) || []).map((tag) =>
+        tag.slice(1).toLowerCase()
+      )
+    ),
+  ].slice(0, 50);
+}
+
+function extractMentions(text) {
+  return [
+    ...new Set(
+      (text.match(/@[\p{L}\p{N}_]+/gu) || []).map((mention) =>
+        mention.slice(1).toLowerCase()
+      )
+    ),
+  ].slice(0, 50);
+}
+
+// Firebase user records provide displayName and photoURL.
+// Firebase does not have a native username field, so username is
+// generated from the display name as a fallback.
+async function getAuthorProfile(uid) {
+  try {
+    console.log("Public Space author profile:", {
+      uid: user.uid,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+    });
+    const user = await firebaseAuth.getUser(uid);
+
+    const displayName = user.displayName || "";
+    const username = displayName
+      ? displayName
+        .normalize("NFKD")
+        .replace(/[^\p{L}\p{N}_]+/gu, "")
+        .toLowerCase()
+        .slice(0, 30)
+      : "";
+
+    return {
+      displayName,
+      username,
+      photoURL: user.photoURL || "",
+    };
+  } catch (error) {
+    console.error("Could not load Public Space author profile:", error.code);
+
+    return {
+      displayName: "",
+      username: "",
+      photoURL: "",
+    };
+  }
+}
+
 async function getAcceptedFriendCount(uid) {
   return Friendship.countDocuments({
     status: "accepted",
@@ -44,13 +107,59 @@ async function getAcceptedFriendCount(uid) {
   });
 }
 
+function validateMedia(rawMedia) {
+  if (!Array.isArray(rawMedia) || rawMedia.length > MAX_MEDIA_ITEMS) {
+    return {
+      error: `You can attach up to ${MAX_MEDIA_ITEMS} media items.`,
+    };
+  }
+
+  const media = [];
+
+  for (const item of rawMedia) {
+    if (
+      !item ||
+      !["image", "video"].includes(item.type) ||
+      typeof item.url !== "string"
+    ) {
+      return { error: "Each media item needs a valid type and URL." };
+    }
+
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(item.url);
+    } catch {
+      return { error: "A media URL is invalid." };
+    }
+
+    if (parsedUrl.protocol !== "https:") {
+      return { error: "Media URLs must use HTTPS." };
+    }
+
+    media.push({
+      type: item.type,
+      url: parsedUrl.toString(),
+    });
+  }
+
+  return { media };
+}
+
+function mediaSignature(media = []) {
+  return media
+    .map((item) => `${item.type}:${item.url}`)
+    .sort()
+    .join("|");
+}
+
 // Create a post.
 router.post("/", requireFirebaseAuth, async (req, res) => {
   try {
     const uid = req.firebaseUser.uid;
-    const text = typeof req.body.text === "string"
-      ? req.body.text.trim()
-      : "";
+
+    const text =
+      typeof req.body.text === "string" ? req.body.text.trim() : "";
 
     const privacy = req.body.privacy || "public";
     const rawMedia = req.body.media ?? [];
@@ -69,57 +178,21 @@ router.post("/", requireFirebaseAuth, async (req, res) => {
       });
     }
 
-    if (!Array.isArray(rawMedia) || rawMedia.length > MAX_MEDIA_ITEMS) {
+    const mediaResult = validateMedia(rawMedia);
+
+    if (mediaResult.error) {
       return res.status(400).json({
         success: false,
-        message: `You can attach up to ${MAX_MEDIA_ITEMS} media items.`,
+        message: mediaResult.error,
       });
     }
 
-    if (!text && rawMedia.length === 0) {
+    const media = mediaResult.media;
+
+    if (!text && media.length === 0) {
       return res.status(400).json({
         success: false,
         message: "Add text, an image, or a video to create a post.",
-      });
-    }
-
-    // Accept only HTTPS media URLs for now.
-    // This does not replace secure media uploading or ownership checks.
-    const media = [];
-
-    for (const item of rawMedia) {
-      if (
-        !item ||
-        !["image", "video"].includes(item.type) ||
-        typeof item.url !== "string"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Each media item needs a valid type and URL.",
-        });
-      }
-
-      let parsedUrl;
-
-      try {
-        parsedUrl = new URL(item.url);
-      } catch {
-        return res.status(400).json({
-          success: false,
-          message: "A media URL is invalid.",
-        });
-      }
-
-      if (parsedUrl.protocol !== "https:") {
-        return res.status(400).json({
-          success: false,
-          message: "Media URLs must use HTTPS.",
-        });
-      }
-
-      media.push({
-        type: item.type,
-        url: parsedUrl.toString(),
       });
     }
 
@@ -155,15 +228,9 @@ router.post("/", requireFirebaseAuth, async (req, res) => {
       }
     }
 
-    // Prevent an identical post by this author within 10 minutes.
     const duplicateSince = new Date(
       Date.now() - DUPLICATE_WINDOW_MINUTES * 60 * 1000
     );
-
-    const mediaSignature = media
-      .map((item) => `${item.type}:${item.url}`)
-      .sort()
-      .join("|");
 
     const recentPosts = await Post.find({
       authorUid: uid,
@@ -173,17 +240,13 @@ router.post("/", requireFirebaseAuth, async (req, res) => {
       .select("text media")
       .lean();
 
-    const duplicate = recentPosts.some((post) => {
-      const previousSignature = (post.media || [])
-        .map((item) => `${item.type}:${item.url}`)
-        .sort()
-        .join("|");
+    const signature = mediaSignature(media);
 
-      return (
-        (text || "") === (post.text || "") &&
-        mediaSignature === previousSignature
-      );
-    });
+    const duplicate = recentPosts.some(
+      (post) =>
+        text === (post.text || "") &&
+        signature === mediaSignature(post.media || [])
+    );
 
     if (duplicate) {
       return res.status(409).json({
@@ -192,25 +255,22 @@ router.post("/", requireFirebaseAuth, async (req, res) => {
       });
     }
 
+    const authorProfile = await getAuthorProfile(uid);
+
     const editUntil = new Date(
       Date.now() + EDIT_WINDOW_MINUTES * 60 * 1000
     );
 
     const post = await Post.create({
       authorUid: uid,
-
-      // Profile details will be connected to a trusted profile model later.
-      authorProfile: {
-        displayName: "",
-        username: "",
-        photoURL: "",
-      },
-
+      authorProfile,
       friendCountAtPosting: friendCount,
       text,
       media,
       mediaType: getMediaType(text, media),
       privacy,
+      hashtags: extractHashtags(text),
+      mentions: extractMentions(text),
       editUntil,
     });
 
@@ -242,10 +302,31 @@ router.get("/", requireFirebaseAuth, async (req, res) => {
       .limit(20)
       .lean();
 
+    // Refresh author profiles from Firebase for older posts too.
+    const profileCache = new Map();
+
+    const postsWithProfiles = await Promise.all(
+      posts.map(async (post) => {
+        if (!profileCache.has(post.authorUid)) {
+          profileCache.set(
+            post.authorUid,
+            getAuthorProfile(post.authorUid)
+          );
+        }
+
+        const authorProfile = await profileCache.get(post.authorUid);
+
+        return {
+          ...post,
+          authorProfile,
+        };
+      })
+    );
+
     return res.json({
       success: true,
-      count: posts.length,
-      posts,
+      count: postsWithProfiles.length,
+      posts: postsWithProfiles,
     });
   } catch (error) {
     console.error("Load Public Space posts error:", error.message);
@@ -263,14 +344,13 @@ router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
     const uid = req.firebaseUser.uid;
     const { postId } = req.params;
 
-    if (!require("mongoose").Types.ObjectId.isValid(postId)) {
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid post ID.",
       });
     }
 
-    // Find only an active post belonging to the signed-in author.
     const post = await Post.findOne({
       _id: postId,
       authorUid: uid,
@@ -293,7 +373,6 @@ router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
 
     const { text, media, privacy } = req.body;
 
-    // Require the complete text and media fields for an edit.
     if (typeof text !== "string" || !Array.isArray(media)) {
       return res.status(400).json({
         success: false,
@@ -303,21 +382,25 @@ router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
 
     const cleanText = text.trim();
 
-    if (cleanText.length > 5000) {
+    if (cleanText.length > MAX_TEXT_LENGTH) {
       return res.status(400).json({
         success: false,
-        message: "Post text cannot exceed 5000 characters.",
+        message: `Post text cannot exceed ${MAX_TEXT_LENGTH} characters.`,
       });
     }
 
-    if (media.length > 4) {
+    const mediaResult = validateMedia(media);
+
+    if (mediaResult.error) {
       return res.status(400).json({
         success: false,
-        message: "You can attach up to 4 media items.",
+        message: mediaResult.error,
       });
     }
 
-    if (!cleanText && media.length === 0) {
+    const cleanMedia = mediaResult.media;
+
+    if (!cleanText && cleanMedia.length === 0) {
       return res.status(400).json({
         success: false,
         message: "A post must contain text, an image, or a video.",
@@ -334,53 +417,11 @@ router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
       });
     }
 
-    const cleanMedia = [];
-
-    for (const item of media) {
-      if (
-        !item ||
-        !["image", "video"].includes(item.type) ||
-        typeof item.url !== "string"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Each media item needs a valid type and URL.",
-        });
-      }
-
-      let parsedUrl;
-
-      try {
-        parsedUrl = new URL(item.url);
-      } catch {
-        return res.status(400).json({
-          success: false,
-          message: "A media URL is invalid.",
-        });
-      }
-
-      if (parsedUrl.protocol !== "https:") {
-        return res.status(400).json({
-          success: false,
-          message: "Media URLs must use HTTPS.",
-        });
-      }
-
-      cleanMedia.push({
-        type: item.type,
-        url: parsedUrl.toString(),
-      });
-    }
-
-    // Update only fields the author is allowed to change.
     post.text = cleanText;
     post.media = cleanMedia;
-    post.mediaType =
-      cleanMedia.length === 0
-        ? "text"
-        : cleanText
-          ? "mixed"
-          : cleanMedia[0].type;
+    post.mediaType = getMediaType(cleanText, cleanMedia);
+    post.hashtags = extractHashtags(cleanText);
+    post.mentions = extractMentions(cleanText);
 
     if (privacy !== undefined) {
       post.privacy = privacy;
@@ -409,7 +450,7 @@ router.delete("/:postId", requireFirebaseAuth, async (req, res) => {
     const uid = req.firebaseUser.uid;
     const { postId } = req.params;
 
-    if (!require("mongoose").Types.ObjectId.isValid(postId)) {
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid post ID.",
