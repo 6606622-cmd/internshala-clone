@@ -6,6 +6,7 @@ const { getAuth } = require("firebase-admin/auth");
 const { adminApp } = require("../../firebaseAdmin");
 const PublicSpacePost = require("../PublicSpacePost");
 const PublicSpaceInteraction = require("../PublicSpaceInteraction");
+const PublicSpaceNotification = require("../PublicSpaceNotification");
 
 const router = express.Router();
 const firebaseAuth = getAuth(adminApp);
@@ -22,7 +23,10 @@ const requireFirebaseAuth = asyncHandler(async (req, res, next) => {
     : "";
 
   if (!token) {
-    return res.status(401).json({ message: "Authentication required." });
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required.",
+    });
   }
 
   try {
@@ -30,13 +34,42 @@ const requireFirebaseAuth = asyncHandler(async (req, res, next) => {
     req.user = { uid: decoded.uid };
     next();
   } catch {
-    return res.status(401).json({ message: "Invalid or expired login." });
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired login.",
+    });
   }
 });
 
 router.use(requireFirebaseAuth);
 
 const validId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// Create a notification without allowing a notification failure
+// to turn a successful like/comment into a failed request.
+async function createNotification({
+  recipientUid,
+  actorUid,
+  type,
+  message,
+  postId = null,
+}) {
+  if (!recipientUid || !actorUid || recipientUid === actorUid) {
+    return;
+  }
+
+  try {
+    await PublicSpaceNotification.create({
+      recipientUid,
+      actorUid,
+      type,
+      message,
+      postId,
+    });
+  } catch (error) {
+    console.error("Notification creation failed:", error.message);
+  }
+}
 
 async function findAvailablePost(postId, uid, res) {
   if (!validId(postId)) {
@@ -54,8 +87,8 @@ async function findAvailablePost(postId, uid, res) {
     return null;
   }
 
-  // This initial version allows interactions with public posts,
-  // plus posts authored by the current user.
+  // Public posts and the current user's own posts are available.
+  // Friends-only access will be added in the feed/privacy upgrade.
   if (post.privacy !== "public" && post.authorUid !== uid) {
     res.status(403).json({
       message: "You cannot interact with this private post.",
@@ -66,14 +99,7 @@ async function findAvailablePost(postId, uid, res) {
   return post;
 }
 
-
-/**
- * GET MY INTERACTION STATUS
- * Example:
- * /public-space/interactions/status?postIds=id1,id2,id3
- *
- * Returns the current user's liked and saved post IDs.
- */
+// GET MY INTERACTION STATUS
 router.get(
   "/status",
   asyncHandler(async (req, res) => {
@@ -133,7 +159,6 @@ router.get(
   })
 );
 
-
 // LIKE / UNLIKE
 router.post(
   "/:postId/like",
@@ -149,14 +174,33 @@ router.post(
     };
 
     const existing = await PublicSpaceInteraction.findOne(filter);
+    let liked;
 
     if (existing) {
       await PublicSpaceInteraction.deleteOne({ _id: existing._id });
+      liked = false;
     } else {
       try {
         await PublicSpaceInteraction.create(filter);
+        liked = true;
       } catch (error) {
         if (error.code !== 11000) throw error;
+
+        // Another request may have created the like concurrently.
+        liked = Boolean(
+          await PublicSpaceInteraction.exists(filter)
+        );
+      }
+
+      // Notify only when this request results in a new like.
+      if (liked) {
+        await createNotification({
+          recipientUid: post.authorUid,
+          actorUid: uid,
+          type: "like",
+          message: "Someone liked your post.",
+          postId: post._id,
+        });
       }
     }
 
@@ -168,10 +212,6 @@ router.post(
     await PublicSpacePost.updateOne(
       { _id: post._id },
       { $set: { likesCount } }
-    );
-
-    const liked = Boolean(
-      await PublicSpaceInteraction.exists(filter)
     );
 
     res.json({ liked, likesCount });
@@ -186,9 +226,10 @@ router.post(
     const post = await findAvailablePost(req.params.postId, uid, res);
     if (!post) return;
 
-    const text = typeof req.body.text === "string"
-      ? req.body.text.trim()
-      : "";
+    const text =
+      typeof req.body.text === "string"
+        ? req.body.text.trim()
+        : "";
 
     if (!text || text.length > 2000) {
       return res.status(400).json({
@@ -212,6 +253,14 @@ router.post(
       { _id: post._id },
       { $set: { commentsCount } }
     );
+
+    await createNotification({
+      recipientUid: post.authorUid,
+      actorUid: uid,
+      type: "comment",
+      message: "Someone commented on your post.",
+      postId: post._id,
+    });
 
     res.status(201).json({
       comment: {
@@ -378,9 +427,10 @@ router.post(
       "other",
     ];
 
-    const reason = typeof req.body.reason === "string"
-      ? req.body.reason.trim().toLowerCase()
-      : "";
+    const reason =
+      typeof req.body.reason === "string"
+        ? req.body.reason.trim().toLowerCase()
+        : "";
 
     if (!allowedReasons.includes(reason)) {
       return res.status(400).json({

@@ -1,228 +1,251 @@
 
 const express = require("express");
-const router = express.Router();
-
-const Friendship = require("../PublicSpaceFriendship");
-const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
+const mongoose = require("mongoose");
 const { getAuth } = require("firebase-admin/auth");
-const adminApp = require("../../firebaseAdmin");
 
-const firebaseAuth = getAuth(adminApp);
-// Keep the pair in a consistent order.
-function getPair(uid1, uid2) {
-  return [uid1, uid2].sort();
-}
+const { adminApp } = require("../../firebaseAdmin");
+const Friendship = require("../PublicSpaceFriendship");
+const PublicSpaceNotification = require("../PublicSpaceNotification");
 
-// Send a friend request.
-router.post("/request/:targetUid", requireFirebaseAuth, async (req, res) => {
-  try {
-    const requesterUid = req.firebaseUser.uid;
-    const targetUid = String(req.params.targetUid || "").trim();
+const router = express.Router();
+const auth = getAuth(adminApp);
 
-    if (!targetUid || targetUid === requesterUid) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid friend request target.",
-      });
-    }
+const asyncHandler = (handler) => (req, res, next) => {
+  Promise.resolve(handler(req, res, next)).catch(next);
+};
 
-    // Verify that the target is a real Firebase user.
-    try {
- console.log("FRIEND REQUEST TARGET:", targetUid);
+const requireFirebaseAuth = asyncHandler(async (req, res, next) => {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ")
+    ? header.slice(7)
+    : "";
 
-const verifiedUser = await firebaseAuth.getUser(targetUid);
-
-console.log("VERIFIED FIREBASE USER:", verifiedUser.uid);
-    } catch (error) {
-      if (
-        error.code === "auth/user-not-found" ||
-        error.code === "auth/invalid-uid"
-      ) {
-        return res.status(404).json({
-          success: false,
-          message: "User not found. Please select a registered user.",
-        });
-      }
-
-      console.error("Target user verification error:", error.message);
-
-      return res.status(500).json({
-        success: false,
-        message: "Could not verify the selected user.",
-      });
-    }
-    const [userAUid, userBUid] = getPair(requesterUid, targetUid);
-
-    const existing = await Friendship.findOne({ userAUid, userBUid });
-
-    if (existing) {
-      if (existing.status === "accepted") {
-        return res.status(409).json({
-          success: false,
-          message: "You are already friends.",
-        });
-      }
-
-      if (existing.status === "pending") {
-        return res.status(409).json({
-          success: false,
-          message: "A friend request already exists.",
-        });
-      }
-
-      if (existing.status === "blocked") {
-        return res.status(403).json({
-          success: false,
-          message: "This friendship cannot be requested.",
-        });
-      }
-
-      // Allow a new request after a previous request was rejected.
-      existing.status = "pending";
-      existing.requestedByUid = requesterUid;
-      existing.respondedAt = null;
-      existing.blockedByUid = "";
-      await existing.save();
-
-      return res.status(200).json({
-        success: true,
-        message: "Friend request sent.",
-      });
-    }
-
-    await Friendship.create({
-      userAUid,
-      userBUid,
-      requestedByUid: requesterUid,
-      status: "pending",
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Friend request sent.",
-    });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "A friendship record already exists.",
-      });
-    }
-
-    console.error("Friend request error:", error.message);
-    return res.status(500).json({
+  if (!token) {
+    return res.status(401).json({
       success: false,
-      message: "Could not send friend request.",
+      message: "Authentication required.",
+    });
+  }
+
+  try {
+    const decoded = await auth.verifyIdToken(token);
+    req.user = { uid: decoded.uid };
+    next();
+  } catch {
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired login.",
     });
   }
 });
 
-// Accept or reject a request.
-router.patch("/:friendshipId/respond", requireFirebaseAuth, async (req, res) => {
+router.use(requireFirebaseAuth);
+
+async function createNotification({
+  recipientUid,
+  actorUid,
+  type,
+  message,
+  friendshipId,
+}) {
+  if (!recipientUid || !actorUid || recipientUid === actorUid) return;
+
   try {
-    const currentUid = req.firebaseUser.uid;
-    const { action } = req.body;
+    await PublicSpaceNotification.create({
+      recipientUid,
+      actorUid,
+      type,
+      message,
+      friendshipId,
+    });
+  } catch (error) {
+    // Notification failures should not cancel a successful friend action.
+    console.error("Friend notification creation failed:", error.message);
+  }
+}
+
+function getPair(uid1, uid2) {
+  return [uid1, uid2].sort();
+}
+
+// SEND FRIEND REQUEST
+router.post(
+  "/request/:targetUid",
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
+    const targetUid = String(req.params.targetUid || "").trim();
+
+    if (!targetUid || targetUid === uid) {
+      return res.status(400).json({
+        message: "You cannot send a friend request to yourself.",
+      });
+    }
+
+    // Confirm that the target is a valid Firebase user.
+    try {
+      await auth.getUser(targetUid);
+    } catch {
+      return res.status(404).json({
+        message: "The target user was not found.",
+      });
+    }
+
+    const [userAUid, userBUid] = getPair(uid, targetUid);
+
+    let friendship = await Friendship.findOne({
+      userAUid,
+      userBUid,
+    });
+
+    if (friendship) {
+      if (friendship.status === "accepted") {
+        return res.status(409).json({
+          message: "You are already friends.",
+          friendship,
+        });
+      }
+
+      if (friendship.status === "pending") {
+        return res.status(409).json({
+          message: "A friend request is already pending.",
+          friendship,
+        });
+      }
+
+      if (friendship.status === "blocked") {
+        return res.status(403).json({
+          message: "This friendship request cannot be sent.",
+        });
+      }
+
+      // Permit a new request after a previous request was rejected.
+      friendship.requestedByUid = uid;
+      friendship.status = "pending";
+      friendship.respondedAt = null;
+      friendship.blockedByUid = null;
+      await friendship.save();
+    } else {
+      friendship = await Friendship.create({
+        userAUid,
+        userBUid,
+        requestedByUid: uid,
+        status: "pending",
+      });
+    }
+
+    await createNotification({
+      recipientUid: targetUid,
+      actorUid: uid,
+      type: "friend_request",
+      message: "You received a new friend request.",
+      friendshipId: friendship._id,
+    });
+
+    return res.status(201).json({
+      message: "Friend request sent.",
+      friendship,
+    });
+  })
+);
+
+// ACCEPT OR REJECT AN INCOMING REQUEST
+router.patch(
+  "/:friendshipId/respond",
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
+    const { friendshipId } = req.params;
+    const action =
+      typeof req.body.action === "string"
+        ? req.body.action.trim().toLowerCase()
+        : "";
+
+    if (!mongoose.Types.ObjectId.isValid(friendshipId)) {
+      return res.status(400).json({
+        message: "Invalid friendship ID.",
+      });
+    }
 
     if (!["accept", "reject"].includes(action)) {
       return res.status(400).json({
-        success: false,
         message: "Action must be accept or reject.",
       });
     }
 
-    const friendship = await Friendship.findById(req.params.friendshipId);
+    const friendship = await Friendship.findOne({
+      _id: friendshipId,
+      status: "pending",
+    });
 
     if (!friendship) {
       return res.status(404).json({
-        success: false,
-        message: "Friend request not found.",
+        message: "Pending friend request not found.",
       });
     }
 
-    const isParticipant =
-      friendship.userAUid === currentUid ||
-      friendship.userBUid === currentUid;
-
-    if (!isParticipant) {
+    if (
+      friendship.requestedByUid === uid ||
+      (friendship.userAUid !== uid && friendship.userBUid !== uid)
+    ) {
       return res.status(403).json({
-        success: false,
-        message: "You cannot respond to this request.",
-      });
-    }
-
-    if (friendship.requestedByUid === currentUid) {
-      return res.status(403).json({
-        success: false,
-        message: "You cannot respond to your own request.",
-      });
-    }
-
-    if (friendship.status !== "pending") {
-      return res.status(409).json({
-        success: false,
-        message: "This request is no longer pending.",
+        message: "You cannot respond to this friend request.",
       });
     }
 
     friendship.status = action === "accept" ? "accepted" : "rejected";
     friendship.respondedAt = new Date();
-
     await friendship.save();
 
+    if (action === "accept") {
+      await createNotification({
+        recipientUid: friendship.requestedByUid,
+        actorUid: uid,
+        type: "friend_accepted",
+        message: "Your friend request was accepted.",
+        friendshipId: friendship._id,
+      });
+    }
+
     return res.json({
-      success: true,
       message:
         action === "accept"
           ? "Friend request accepted."
           : "Friend request rejected.",
-      status: friendship.status,
+      friendship,
     });
-  } catch (error) {
-    console.error("Friend request response error:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Could not respond to friend request.",
-    });
-  }
-});
+  })
+);
 
-// List accepted friends.
-router.get("/friends", requireFirebaseAuth, async (req, res) => {
-  try {
-    const uid = req.firebaseUser.uid;
+// LIST ACCEPTED FRIENDS
+router.get(
+  "/friends",
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
 
     const friendships = await Friendship.find({
       status: "accepted",
       $or: [{ userAUid: uid }, { userBUid: uid }],
     })
-      .select("userAUid userBUid createdAt")
-      .sort({ updatedAt: -1 })
+      .sort({ respondedAt: -1 })
       .lean();
 
-    const friends = friendships.map((friendship) =>
-      friendship.userAUid === uid
-        ? friendship.userBUid
-        : friendship.userAUid
-    );
+    const friends = friendships.map((friendship) => ({
+      friendshipId: friendship._id,
+      uid:
+        friendship.userAUid === uid
+          ? friendship.userBUid
+          : friendship.userAUid,
+      since: friendship.respondedAt,
+    }));
 
-    return res.json({
-      success: true,
-      count: friends.length,
-      friends,
-    });
-  } catch (error) {
-    console.error("Friends list error:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Could not load friends.",
-    });
-  }
-});
+    return res.json({ friends });
+  })
+);
 
-// List incoming pending requests.
-router.get("/requests/incoming", requireFirebaseAuth, async (req, res) => {
-  try {
-    const uid = req.firebaseUser.uid;
+// LIST INCOMING PENDING REQUESTS
+router.get(
+  "/requests/incoming",
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
 
     const requests = await Friendship.find({
       status: "pending",
@@ -232,17 +255,8 @@ router.get("/requests/incoming", requireFirebaseAuth, async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    return res.json({
-      success: true,
-      requests,
-    });
-  } catch (error) {
-    console.error("Incoming requests error:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Could not load friend requests.",
-    });
-  }
-});
+    return res.json({ requests });
+  })
+);
 
 module.exports = router;

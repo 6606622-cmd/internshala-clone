@@ -14,6 +14,7 @@ const forgotPassword = require("./forgotPassword");
 const publicSpaceFriendship = require("./publicSpaceFriendship");
 const publicSpacePost = require("./publicSpacePost");
 const publicSpaceInteractions = require("./publicSpaceInteractions");
+const publicSpaceNotifications = require("./publicSpaceNotifications");
 
 router.use("/admin", admin);
 router.use("/internship", intern);
@@ -26,5 +27,6 @@ router.use("/forgot-password", forgotPassword);
 router.use("/public-space/friendships", publicSpaceFriendship);
 router.use("/public-space/posts", publicSpacePost);
 router.use("/public-space/interactions", publicSpaceInteractions);
+router.use("/public-space/notifications", publicSpaceNotifications);
 
 module.exports = router;
