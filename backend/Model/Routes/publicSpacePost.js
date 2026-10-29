@@ -66,35 +66,38 @@ function extractMentions(text) {
 // Firebase user records provide displayName and photoURL.
 // Firebase does not have a native username field, so username is
 // generated from the display name as a fallback.
+
 async function getAuthorProfile(uid) {
   try {
-    console.log("Public Space author profile:", {
-      uid: user.uid,
-      displayName: user.displayName,
-      photoURL: user.photoURL,
-    });
-    const user = await firebaseAuth.getUser(uid);
+    const firebaseUser = await firebaseAuth.getUser(uid);
 
-    const displayName = user.displayName || "";
+    const displayName = firebaseUser.displayName || "";
     const username = displayName
       ? displayName
-        .normalize("NFKD")
-        .replace(/[^\p{L}\p{N}_]+/gu, "")
-        .toLowerCase()
-        .slice(0, 30)
+          .normalize("NFKD")
+          .replace(/[^\p{L}\p{N}_]+/gu, "")
+          .toLowerCase()
+          .slice(0, 30)
       : "";
+
+    console.log("Public Space author profile:", {
+      uid: firebaseUser.uid,
+      displayName,
+      hasPhoto: Boolean(firebaseUser.photoURL),
+    });
 
     return {
       displayName,
       username,
-      photoURL: user.photoURL || "",
+      photoURL: firebaseUser.photoURL || "",
     };
   } catch (error) {
-   console.error("Could not load Public Space author profile:", {
-  code: error.code,
-  message: error.message,
-  uid,
-});
+    console.error("Could not load Public Space author profile:", {
+      code: error.code,
+      message: error.message,
+      uid,
+    });
+
     return {
       displayName: "",
       username: "",
@@ -102,6 +105,7 @@ async function getAuthorProfile(uid) {
     };
   }
 }
+
 
 async function getAcceptedFriendCount(uid) {
   return Friendship.countDocuments({
