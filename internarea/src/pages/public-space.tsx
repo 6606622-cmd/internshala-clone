@@ -51,6 +51,8 @@ type PostComment = {
   userUid: string;
   text: string;
   createdAt: string;
+  displayName?: string;
+  username?: string;
 };
 
 type REPORT_REASON =
@@ -67,6 +69,12 @@ const REPORT_REASONS: { value: REPORT_REASON; label: string }[] = [
   { value: "misinformation", label: "Misinformation" },
   { value: "other", label: "Other" },
 ];
+
+type FriendEntry = {
+  friendshipId: string;
+  uid: string;
+  since?: string;
+};
 
 async function apiRequest<T = Record<string, unknown>>(
   path: string,
@@ -112,7 +120,7 @@ export default function PublicSpacePage() {
   const [friendshipsLoading, setFriendshipsLoading] = useState(true);
   const [friendshipError, setFriendshipError] = useState("");
   const [friendshipNotice, setFriendshipNotice] = useState("");
-  const [friends, setFriends] = useState<string[]>([]);
+  const [friends, setFriends] = useState<(FriendEntry | string)[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<FriendshipRequest[]>([]);
   const [respondingId, setRespondingId] = useState("");
 
@@ -577,30 +585,30 @@ export default function PublicSpacePage() {
     <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-900">
       <div className="mx-auto max-w-2xl">
 
-<header className="mb-6 flex items-center justify-between gap-3">
-  <div>
-    <p className="text-sm font-semibold text-indigo-600">INTERNAREA</p>
-    <h1 className="text-3xl font-bold">Public Space</h1>
-    <p className="mt-1 text-sm text-slate-500">
-      Share updates with your community.
-    </p>
-  </div>
+        <header className="mb-6 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-indigo-600">INTERNAREA</p>
+            <h1 className="text-3xl font-bold">Public Space</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Share updates with your community.
+            </p>
+          </div>
 
-  <div className="flex shrink-0 items-center gap-2">
-    <NotificationBell />
+          <div className="flex shrink-0 items-center gap-2">
+            <NotificationBell />
 
-    <button
-      type="button"
-      onClick={() => {
-        void loadPosts();
-        void loadFriendships();
-      }}
-      className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
-    >
-      Refresh
-    </button>
-  </div>
-</header>
+            <button
+              type="button"
+              onClick={() => {
+                void loadPosts();
+                void loadFriendships();
+              }}
+              className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+            >
+              Refresh
+            </button>
+          </div>
+        </header>
 
         <section className="mb-6 rounded-2xl border bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
@@ -669,22 +677,43 @@ export default function PublicSpacePage() {
             )}
           </div>
 
+
           <div className="mt-6 border-t pt-5">
-            <h3 className="mb-3 font-semibold">Your friends ({friends.length})</h3>
+            <h3 className="mb-3 font-semibold">
+              Your friends ({friends.length})
+            </h3>
+
             {friendshipsLoading ? (
               <p className="text-sm text-slate-500">Loading...</p>
             ) : friends.length === 0 ? (
-              <p className="text-sm text-slate-500">Your friends will appear here.</p>
+              <p className="text-sm text-slate-500">
+                Your friends will appear here.
+              </p>
             ) : (
               <ul className="space-y-2">
-                {friends.map((uid) => (
-                  <li key={uid} className="break-all rounded-xl bg-slate-50 p-3 text-sm">
-                    {uid}
-                  </li>
-                ))}
+                {friends.map((friend) => {
+                  const uid = typeof friend === "string" ? friend : friend.uid;
+
+                  return (
+                    <li
+                      key={typeof friend === "string" ? friend : friend.friendshipId || friend.uid}
+                      className="break-all rounded-xl bg-slate-50 p-3 text-sm"
+                    >
+                      <p>{uid}</p>
+
+                      {typeof friend !== "string" && friend.since && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Friends since{" "}
+                          {new Date(friend.since).toLocaleDateString()}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
+
         </section>
 
         <form onSubmit={createPost} className="mb-6 rounded-2xl border bg-white p-5 shadow-sm">
@@ -876,9 +905,15 @@ export default function PublicSpacePage() {
                             <div key={comment.id} className="rounded-lg bg-white p-3">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
+
                                   <p className="text-xs font-semibold text-slate-500">
-                                    {comment.userUid === currentUid ? "You" : "InternArea member"}
+                                    {comment.userUid === currentUid
+                                      ? "You"
+                                      : comment.displayName ||
+                                      comment.username ||
+                                      "InternArea member"}
                                   </p>
+
                                   <p className="mt-1 whitespace-pre-wrap break-words text-sm">{comment.text}</p>
                                   <p className="mt-1 text-xs text-slate-400">{formatDate(comment.createdAt)}</p>
                                 </div>

@@ -47,7 +47,6 @@ const validId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // Create a notification without allowing a notification failure
 // to turn a successful like/comment into a failed request.
-
 async function createNotification({
   recipientUid,
   actorUid,
@@ -77,7 +76,7 @@ async function createNotification({
       actorName
     );
 
-    await PublicSpaceNotification.create({
+      await PublicSpaceNotification.create({
       recipientUid,
       actorUid,
       type,
@@ -293,6 +292,8 @@ router.post(
 );
 
 // GET COMMENTS
+
+ // GET COMMENTS
 router.get(
   "/:postId/comments",
   asyncHandler(async (req, res) => {
@@ -308,14 +309,36 @@ router.get(
       .limit(100)
       .lean();
 
-    res.json({
-      comments: comments.map((comment) => ({
-        id: comment._id,
-        userUid: comment.userUid,
-        text: comment.text,
-        createdAt: comment.createdAt,
-      })),
-    });
+    const formattedComments = await Promise.all(
+      comments.map(async (comment) => {
+        let displayName = "";
+        let username = "";
+
+        try {
+          const user = await firebaseAuth.getUser(comment.userUid);
+          displayName = user.displayName || "";
+          username = user.email
+            ? user.email.split("@")[0]
+            : "";
+        } catch (error) {
+          console.error(
+            "Unable to load commenter profile:",
+            error.message
+          );
+        }
+
+        return {
+          id: String(comment._id),
+          userUid: comment.userUid,
+          displayName,
+          username,
+          text: comment.text,
+          createdAt: comment.createdAt,
+        };
+      })
+    );
+
+    res.json({ comments: formattedComments });
   })
 );
 
