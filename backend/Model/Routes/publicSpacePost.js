@@ -90,8 +90,11 @@ async function getAuthorProfile(uid) {
       photoURL: user.photoURL || "",
     };
   } catch (error) {
-    console.error("Could not load Public Space author profile:", error.code);
-
+   console.error("Could not load Public Space author profile:", {
+  code: error.code,
+  message: error.message,
+  uid,
+});
     return {
       displayName: "",
       username: "",
