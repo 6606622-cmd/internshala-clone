@@ -47,6 +47,7 @@ const validId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // Create a notification without allowing a notification failure
 // to turn a successful like/comment into a failed request.
+
 async function createNotification({
   recipientUid,
   actorUid,
@@ -59,44 +60,33 @@ async function createNotification({
   }
 
   try {
+    // Get the actor's real name from Firebase.
+    const actor = await firebaseAuth.getUser(actorUid);
+
+    const actorName =
+      (typeof actor.displayName === "string" &&
+        actor.displayName.trim()) ||
+      (typeof actor.email === "string" &&
+        actor.email.includes("@") &&
+        actor.email.split("@")[0]) ||
+      "Someone";
+
+    // Replace the generic "Someone" with the actor's name.
+    const personalizedMessage = message.replace(
+      /^Someone\b/,
+      actorName
+    );
+
     await PublicSpaceNotification.create({
       recipientUid,
       actorUid,
       type,
-      message,
+      message: personalizedMessage,
       postId,
     });
   } catch (error) {
     console.error("Notification creation failed:", error.message);
   }
-}
-
-async function findAvailablePost(postId, uid, res) {
-  if (!validId(postId)) {
-    res.status(400).json({ message: "Invalid post ID." });
-    return null;
-  }
-
-  const post = await PublicSpacePost.findOne({
-    _id: postId,
-    isDeleted: false,
-  });
-
-  if (!post) {
-    res.status(404).json({ message: "Post not found." });
-    return null;
-  }
-
-  // Public posts and the current user's own posts are available.
-  // Friends-only access will be added in the feed/privacy upgrade.
-  if (post.privacy !== "public" && post.authorUid !== uid) {
-    res.status(403).json({
-      message: "You cannot interact with this private post.",
-    });
-    return null;
-  }
-
-  return post;
 }
 
 // GET MY INTERACTION STATUS
