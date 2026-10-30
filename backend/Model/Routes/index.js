@@ -15,6 +15,7 @@ const publicSpaceFriendship = require("./publicSpaceFriendship");
 const publicSpacePost = require("./publicSpacePost");
 const publicSpaceInteractions = require("./publicSpaceInteractions");
 const publicSpaceNotifications = require("./publicSpaceNotifications");
+const publicSpaceUpload = require("./publicSpaceUpload");
 
 router.use("/admin", admin);
 router.use("/internship", intern);
@@ -28,5 +29,6 @@ router.use("/public-space/friendships", publicSpaceFriendship);
 router.use("/public-space/posts", publicSpacePost);
 router.use("/public-space/interactions", publicSpaceInteractions);
 router.use("/public-space/notifications", publicSpaceNotifications);
+router.use("/public-space/uploads", publicSpaceUpload);
 
 module.exports = router;

@@ -476,7 +476,7 @@ router.delete("/:postId", requireFirebaseAuth, async (req, res) => {
           deletedAt: new Date(),
         },
       },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     if (!post) {

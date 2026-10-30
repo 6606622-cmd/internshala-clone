@@ -259,4 +259,39 @@ router.get(
   })
 );
 
+
+// UNFOLLOW / REMOVE FRIEND
+router.delete(
+  "/:friendshipId",
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
+    const { friendshipId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(friendshipId)) {
+      return res.status(400).json({
+        message: "Invalid friendship ID.",
+      });
+    }
+
+    const friendship = await Friendship.findOne({
+      _id: friendshipId,
+      status: "accepted",
+      $or: [{ userAUid: uid }, { userBUid: uid }],
+    });
+
+    if (!friendship) {
+      return res.status(404).json({
+        message: "Friendship not found or already removed.",
+      });
+    }
+
+    await Friendship.deleteOne({ _id: friendship._id });
+
+    return res.json({
+      message: "Friend removed successfully.",
+    });
+  })
+);
+
+
 module.exports = router;
