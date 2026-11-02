@@ -2,13 +2,13 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const { getAuth } = require("firebase-admin/auth");
-
-const { adminApp } = require("../../firebaseAdmin");
+const adminApp = require("../../firebaseAdmin");
 const Friendship = require("../PublicSpaceFriendship");
 const PublicSpaceNotification = require("../PublicSpaceNotification");
 
 const router = express.Router();
 const auth = getAuth(adminApp);
+const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 
 const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next);
@@ -40,6 +40,7 @@ const requireFirebaseAuth = asyncHandler(async (req, res, next) => {
 });
 
 router.use(requireFirebaseAuth);
+router.use(requireVerifiedLogin);
 
 async function createNotification({
   recipientUid,

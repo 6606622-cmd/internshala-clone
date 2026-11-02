@@ -408,7 +408,7 @@ await Payment.findOneAndUpdate(
             paidAt: new Date(),
         },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
 );
 
         return res.json({

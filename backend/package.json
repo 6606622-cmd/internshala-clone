@@ -26,6 +26,7 @@
     "nodemon": "^3.1.14",
     "pdfkit": "^0.20.2",
     "razorpay": "^2.9.8",
-    "react-toastify": "^11.1.0"
+    "react-toastify": "^11.1.0",
+    "ua-parser-js": "^2.0.10"
   }
 }

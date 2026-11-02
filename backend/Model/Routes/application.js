@@ -267,7 +267,7 @@ router.put("/:id", verifyUser, verifyAdmin, async (req, res) => {
             req.params.id,
             { $set: { status: action } },
             {
-                new: true,
+                returnDocument: "after",
                 runValidators: true,
             }
         );

@@ -5,9 +5,11 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   signOut,
+  getIdTokenResult,
 } from "firebase/auth";
-import { Search, User, LogIn } from "lucide-react";
+import { Search, User, LogIn, Users } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
@@ -15,6 +17,77 @@ import { selectuser } from "@/Feature/Userslice";
 import { useLanguage } from "../../context/LanguageContext";
 import { useRouter } from "next/router";
 import axios from "axios";
+
+const API_BASE = "https://internshala-clone-a0st.onrender.com/api";
+const LOGIN_SESSION_KEY = "internarea_login_session";
+
+function saveLoginSession(token: string) {
+  localStorage.setItem(LOGIN_SESSION_KEY, token);
+}
+
+export function getLoginSession() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(LOGIN_SESSION_KEY);
+}
+
+function clearLoginSession() {
+  localStorage.removeItem(LOGIN_SESSION_KEY);
+}
+
+async function startLoginSecurity(user: any) {
+  const idToken = await user.getIdToken(true);
+
+  const response = await fetch(`${API_BASE}/login-security/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || "Login verification failed.");
+  }
+
+  if (!data.otpRequired && data.sessionToken) {
+    saveLoginSession(data.sessionToken);
+  }
+
+  return data;
+}
+
+async function verifyLoginSecurity(
+  user: any,
+  activityId: string,
+  otp: string
+) {
+  const idToken = await user.getIdToken(true);
+
+  const response = await fetch(`${API_BASE}/login-security/verify`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({ activityId, otp }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || "OTP verification failed.");
+  }
+
+  if (!data.sessionToken) {
+    throw new Error("Login session was not created. Please try again.");
+  }
+
+  saveLoginSession(data.sessionToken);
+
+  return data;
+}
 
 type AuthMode = "login" | "signup";
 
@@ -34,6 +107,17 @@ const Navbar = () => {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [loginOtp, setLoginOtp] = useState("");
+  const [loginActivityId, setLoginActivityId] = useState("");
+  const [showLoginOtp, setShowLoginOtp] = useState(false);
+  const [loginOtpLoading, setLoginOtpLoading] = useState(false);
+
+  const checkMustChangePassword = async (
+    firebaseUser: import("firebase/auth").User
+  ): Promise<boolean> => {
+    const tokenResult = await getIdTokenResult(firebaseUser, true);
+    return tokenResult.claims.mustChangePassword === true;
+  };
 
   const internshipAPI =
     "https://internshala-clone-a0st.onrender.com/api/internship";
@@ -58,6 +142,43 @@ const Navbar = () => {
     setAuthMode("login");
   };
 
+  const handleLoginOtpVerification = async (
+    event: React.FormEvent<HTMLFormElement>
+  ) => {
+    event.preventDefault();
+
+    if (loginOtpLoading) return;
+
+    try {
+      setLoginOtpLoading(true);
+
+      const currentUser = auth.currentUser;
+
+      if (!currentUser || !loginActivityId) {
+        throw new Error("Login verification session expired. Please log in again.");
+      }
+
+      await verifyLoginSecurity(
+        currentUser,
+        loginActivityId,
+        loginOtp
+      );
+
+      setShowLoginOtp(false);
+      setLoginOtp("");
+      setLoginActivityId("");
+      setShowLoginModal(false);
+
+      toast.success("Login verified successfully!");
+
+      window.location.reload();
+    } catch (error: any) {
+      toast.error(error.message || "OTP verification failed.");
+    } finally {
+      setLoginOtpLoading(false);
+    }
+  };
+
   // Continue with Google.
   const handleLogin = async () => {
     if (authLoading) return;
@@ -65,14 +186,31 @@ const Navbar = () => {
     try {
       setAuthLoading(true);
 
-      await signInWithPopup(auth, provider);
+      const credential = await signInWithPopup(auth, provider);
+      const securityResult = await startLoginSecurity(credential.user);
+
+      if (securityResult.otpRequired) {
+        setLoginActivityId(securityResult.activityId);
+        setShowLoginOtp(true);
+        return;
+      }
+
+      const mustChangePassword = await checkMustChangePassword(
+        credential.user
+      );
+
+      if (mustChangePassword) {
+        toast.info("Please change your password to continue.");
+        await router.push("/change-password");
+        return;
+      }
 
       toast.success(t.loginSuccess);
     } catch (error: unknown) {
       const code =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 
@@ -87,6 +225,7 @@ const Navbar = () => {
       setAuthLoading(false);
     }
   };
+
 
   // Login using an existing email and password.
   const handleEmailLogin = async (
@@ -106,11 +245,38 @@ const Navbar = () => {
     try {
       setAuthLoading(true);
 
-      await signInWithEmailAndPassword(
+      const credential = await signInWithEmailAndPassword(
         auth,
         email,
         loginPassword
       );
+
+      const securityResult = await startLoginSecurity(credential.user);
+
+      if (securityResult.otpRequired) {
+        setLoginActivityId(securityResult.activityId);
+        setShowLoginOtp(true);
+        return;
+      }
+
+      if (!credential.user.emailVerified) {
+        await signOut(auth);
+        toast.error(
+          "Please verify your email before logging in. Check your inbox for the verification link."
+        );
+        return;
+      }
+
+      const mustChangePassword = await checkMustChangePassword(
+        credential.user
+      );
+
+      if (mustChangePassword) {
+        toast.info("Please change your temporary password to continue.");
+        setShowLoginModal(false);
+        await router.push("/change-password");
+        return;
+      }
 
       toast.success("Login successful!");
 
@@ -122,8 +288,8 @@ const Navbar = () => {
     } catch (error: unknown) {
       const code =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 
@@ -151,7 +317,101 @@ const Navbar = () => {
     }
   };
 
-  // Register a new email/password account.
+
+  // Resend the verification email for an existing account.
+  const handleResendVerification = async () => {
+    if (authLoading) return;
+
+    const email = loginEmail.trim();
+
+    if (!email || !loginPassword) {
+      toast.error(
+        "Enter your registered email and password first."
+      );
+      return;
+    }
+
+    let signedIn = false;
+
+    try {
+      setAuthLoading(true);
+
+      const credential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        loginPassword
+      );
+
+      const securityResult = await startLoginSecurity(credential.user);
+
+      if (securityResult.otpRequired) {
+        setLoginActivityId(securityResult.activityId);
+        setShowLoginOtp(true);
+        return;
+      }
+
+      signedIn = true;
+
+      if (credential.user.emailVerified) {
+        toast.info(
+          "Your email is already verified. You can log in."
+        );
+        return;
+      }
+
+      await sendEmailVerification(credential.user);
+
+      toast.success(
+        "Verification email sent. Check your inbox and spam folder."
+      );
+    } catch (error: unknown) {
+      const code =
+        typeof error === "object" &&
+          error !== null &&
+          "code" in error
+          ? String(error.code)
+          : "";
+
+      console.error("Resend verification error:", code);
+
+      if (
+        code === "auth/invalid-credential" ||
+        code === "auth/wrong-password" ||
+        code === "auth/user-not-found"
+      ) {
+        toast.error(
+          "Email or password is incorrect. Check your details."
+        );
+      } else if (code === "auth/invalid-email") {
+        toast.error("Please enter a valid email address.");
+      } else if (code === "auth/too-many-requests") {
+        toast.error(
+          "Too many attempts. Please wait before trying again."
+        );
+      } else {
+        toast.error(
+          "Could not resend the verification email. Please try again later."
+        );
+      }
+    } finally {
+      if (signedIn) {
+        try {
+          await signOut(auth);
+        } catch (signOutError) {
+          console.error(
+            "Sign-out after verification attempt failed:",
+            signOutError
+          );
+        }
+      }
+
+      setAuthLoading(false);
+    }
+  };
+
+
+
+  // Register a new email/password account and require email verification.
   const handleSignUp = async (
     event: React.FormEvent<HTMLFormElement>
   ) => {
@@ -174,13 +434,33 @@ const Navbar = () => {
     try {
       setAuthLoading(true);
 
-      await createUserWithEmailAndPassword(
+      const credential = await createUserWithEmailAndPassword(
         auth,
         email,
         loginPassword
       );
 
-      toast.success("Account created successfully!");
+      try {
+        await sendEmailVerification(credential.user);
+      } catch (verificationError) {
+        console.error(
+          "Verification email error:",
+          verificationError
+        );
+
+        await signOut(auth);
+
+        toast.error(
+          "Your account was created, but the verification email could not be sent. Please try logging in again to continue."
+        );
+        return;
+      }
+
+      await signOut(auth);
+
+      toast.success(
+        "Account created! Check your email and click the verification link before logging in."
+      );
 
       setShowLoginModal(false);
       setLoginEmail("");
@@ -190,8 +470,8 @@ const Navbar = () => {
     } catch (error: unknown) {
       const code =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 
@@ -219,6 +499,7 @@ const Navbar = () => {
     }
   };
 
+
   // Logout.
   const handleLogout = async () => {
     if (authLoading) return;
@@ -226,6 +507,7 @@ const Navbar = () => {
     try {
       setAuthLoading(true);
 
+      clearLoginSession();
       await signOut(auth);
 
       toast.success(t.logoutSuccess);
@@ -471,6 +753,13 @@ const Navbar = () => {
                 {t.jobs}
               </Link>
 
+              <Link
+                href="/public-space"
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white transition hover:bg-indigo-700"
+              >
+                <Users size={18} />
+                Public Space
+              </Link>
               {/* Search */}
               <div className="relative">
                 <div className="flex items-center rounded-full bg-gray-100 px-4 py-2">
@@ -641,10 +930,20 @@ const Navbar = () => {
             </div>
 
             {/* Mobile icon */}
-            <div className="md:hidden">
+            {/* Mobile navigation */}
+            <div className="flex items-center gap-3 md:hidden">
+              <Link
+                href="/public-space"
+                aria-label="Open Public Space"
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white"
+              >
+                <Users size={18} />
+                <span>Public Space</span>
+              </Link>
+
               <button
                 type="button"
-                onClick={user ? undefined : openLoginModal}
+                onClick={user ? () => void router.push("/profile") : openLoginModal}
                 className="text-gray-600"
                 aria-label={t.profile}
               >
@@ -709,11 +1008,10 @@ const Navbar = () => {
               <button
                 type="button"
                 onClick={() => setAuthMode("login")}
-                className={`rounded-md px-3 py-2 text-sm font-semibold ${
-                  authMode === "login"
-                    ? "bg-white text-blue-600 shadow-sm"
-                    : "text-gray-600"
-                }`}
+                className={`rounded-md px-3 py-2 text-sm font-semibold ${authMode === "login"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-600"
+                  }`}
               >
                 Login
               </button>
@@ -721,11 +1019,10 @@ const Navbar = () => {
               <button
                 type="button"
                 onClick={() => setAuthMode("signup")}
-                className={`rounded-md px-3 py-2 text-sm font-semibold ${
-                  authMode === "signup"
-                    ? "bg-white text-blue-600 shadow-sm"
-                    : "text-gray-600"
-                }`}
+                className={`rounded-md px-3 py-2 text-sm font-semibold ${authMode === "signup"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-600"
+                  }`}
               >
                 Create Account
               </button>
@@ -839,6 +1136,20 @@ const Navbar = () => {
                     ? "Create Account"
                     : "Login"}
               </button>
+
+              {authMode === "login" && (
+                <button
+                  type="button"
+                  onClick={handleResendVerification}
+                  disabled={authLoading}
+                  className="w-full rounded-lg border border-blue-200 px-4 py-3 font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                >
+                  {authLoading
+                    ? "Please wait..."
+                    : "Resend verification email"}
+                </button>
+              )}
+
             </form>
 
             {/* Google sign-in */}
@@ -883,6 +1194,67 @@ const Navbar = () => {
               Continue with Google
             </button>
           </div>
+
+          {showLoginOtp && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-7 shadow-2xl">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  Verify your login
+                </h2>
+
+                <p className="mt-3 text-sm text-gray-600">
+                  Enter the six-digit verification code sent to your registered email.
+                </p>
+
+                <form onSubmit={handleLoginOtpVerification} className="mt-6 space-y-4">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    required
+                    value={loginOtp}
+                    onChange={(event) =>
+                      setLoginOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    placeholder="Enter 6-digit OTP"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-center text-xl tracking-[0.4em] text-gray-900"
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={loginOtpLoading || loginOtp.length !== 6}
+                    className="w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+                  >
+                    {loginOtpLoading ? "Verifying..." : "Verify and Continue"}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={loginOtpLoading}
+                    onClick={async () => {
+                      try {
+                        if (auth.currentUser) {
+                          await signOut(auth);
+                        }
+
+                        clearLoginSession();
+                        setShowLoginOtp(false);
+                        setLoginOtp("");
+                        setLoginActivityId("");
+                        toast.info("Please log in again.");
+                      } catch {
+                        toast.error("Unable to cancel login.");
+                      }
+                    }}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-700"
+                  >
+                    Cancel login
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

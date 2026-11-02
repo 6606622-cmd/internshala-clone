@@ -10,6 +10,8 @@ import {
   signInWithPhoneNumber,
 } from "firebase/auth";
 
+import { getStorage } from "firebase/storage";
+
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyAh9bLOjaKbmj7FSKWq8K2a-TE9IvBXl2A",
@@ -25,11 +27,13 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
+const storage = getStorage(app);
 
 export {
+  app,
   auth,
   provider,
-  app,
+  storage,
   EmailAuthProvider,
   RecaptchaVerifier,
   signInWithPhoneNumber,

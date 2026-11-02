@@ -8,6 +8,7 @@ const router = express.Router();
 const Post = require("../PublicSpacePost");
 const Friendship = require("../PublicSpaceFriendship");
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
+const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 const adminApp = require("../../firebaseAdmin");
 
 const firebaseAuth = getAuth(adminApp);
@@ -161,7 +162,7 @@ function mediaSignature(media = []) {
 }
 
 // Create a post.
-router.post("/", requireFirebaseAuth, async (req, res) => {
+router.post("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
   try {
     const uid = req.firebaseUser.uid;
 
@@ -299,7 +300,7 @@ router.post("/", requireFirebaseAuth, async (req, res) => {
 });
 
 // View recent public posts.
-router.get("/", requireFirebaseAuth, async (req, res) => {
+router.get("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
   try {
     const posts = await Post.find({
       privacy: "public",
@@ -346,7 +347,7 @@ router.get("/", requireFirebaseAuth, async (req, res) => {
 });
 
 // Edit an existing post.
-router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
+router.patch("/:postId", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
   try {
     const uid = req.firebaseUser.uid;
     const { postId } = req.params;
@@ -452,7 +453,7 @@ router.patch("/:postId", requireFirebaseAuth, async (req, res) => {
 });
 
 // Soft-delete a post.
-router.delete("/:postId", requireFirebaseAuth, async (req, res) => {
+router.delete("/:postId", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
   try {
     const uid = req.firebaseUser.uid;
     const { postId } = req.params;

@@ -16,6 +16,7 @@ const publicSpacePost = require("./publicSpacePost");
 const publicSpaceInteractions = require("./publicSpaceInteractions");
 const publicSpaceNotifications = require("./publicSpaceNotifications");
 const publicSpaceUpload = require("./publicSpaceUpload");
+const loginSecurity = require("./loginSecurity");
 
 router.use("/admin", admin);
 router.use("/internship", intern);
@@ -30,5 +31,6 @@ router.use("/public-space/posts", publicSpacePost);
 router.use("/public-space/interactions", publicSpaceInteractions);
 router.use("/public-space/notifications", publicSpaceNotifications);
 router.use("/public-space/uploads", publicSpaceUpload);
+router.use("/login-security", loginSecurity);
 
 module.exports = router;

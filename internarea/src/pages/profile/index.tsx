@@ -12,10 +12,32 @@ import {
   LockKeyhole,
   Eye,
   EyeOff,
+  Monitor,
+  Smartphone,
+  Tablet,
+  ShieldCheck,
+  LogOut,
+  RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
+import { useEffect } from "react";
+import axios from "axios";
 import React, { useState } from "react";
 import { useSelector } from "react-redux";
+
+const API_BASE =
+  "https://internshala-clone-a0st.onrender.com/api";
+
+interface LoginSession {
+  sessionId: string;
+  browser?: string;
+  operatingSystem?: string;
+  deviceType?: string;
+  deviceModel?: string;
+  ipAddress?: string;
+  verifiedAt?: string;
+  lastSeenAt?: string;
+}
 
 const Index = () => {
   const user = useSelector(selectuser);
@@ -29,6 +51,12 @@ const Index = () => {
   const [messageType, setMessageType] = useState<"success" | "error">(
     "error"
   );
+  const [sessions, setSessions] = useState<LoginSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState("");
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionMessage, setSessionMessage] = useState("");
+  const [sessionError, setSessionError] = useState(false);
+  const [revokingSession, setRevokingSession] = useState("");
 
   const currentUser = auth.currentUser;
 
@@ -36,6 +64,113 @@ const Index = () => {
     currentUser?.providerData.some(
       (provider) => provider.providerId === "password"
     ) ?? false;
+
+  const loadSessions = async () => {
+    try {
+      setSessionsLoading(true);
+      setSessionMessage("");
+
+      const response = await axios.get(
+        `${API_BASE}/login-security/sessions`
+      );
+
+      setSessions(response.data.sessions || []);
+      setCurrentSessionId(response.data.currentSessionId || "");
+    } catch (error: any) {
+      console.error("Unable to load sessions:", error);
+
+      setSessionError(true);
+      setSessionMessage(
+        error.response?.data?.message ||
+        "Unable to load active devices."
+      );
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (auth.currentUser) {
+      loadSessions();
+    }
+  }, []);
+
+  const revokeSession = async (sessionId: string) => {
+    if (!window.confirm("Sign out this device?")) return;
+
+    try {
+      setRevokingSession(sessionId);
+      setSessionMessage("");
+
+      await axios.post(
+        `${API_BASE}/login-security/sessions/${encodeURIComponent(sessionId)}/revoke`
+      );
+
+      setSessions((previous) =>
+        previous.filter((session) => session.sessionId !== sessionId)
+      );
+
+      setSessionError(false);
+      setSessionMessage("Device signed out successfully.");
+    } catch (error: any) {
+      setSessionError(true);
+      setSessionMessage(
+        error.response?.data?.message ||
+        "Unable to sign out this device."
+      );
+    } finally {
+      setRevokingSession("");
+    }
+  };
+
+  const revokeOtherSessions = async () => {
+    if (
+      !window.confirm(
+        "Are you sure you want to sign out all other devices?"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setRevokingSession("others");
+      setSessionMessage("");
+
+      const response = await axios.post(
+        `${API_BASE}/login-security/sessions/revoke-others`
+      );
+
+      setSessions((previous) =>
+        previous.filter(
+          (session) => session.sessionId === currentSessionId
+        )
+      );
+
+      setSessionError(false);
+      setSessionMessage(
+        `${response.data.revokedCount} other device(s) signed out.`
+      );
+    } catch (error: any) {
+      setSessionError(true);
+      setSessionMessage(
+        error.response?.data?.message ||
+        "Unable to sign out other devices."
+      );
+    } finally {
+      setRevokingSession("");
+    }
+  };
+
+  const getDeviceIcon = (type?: string) => {
+    switch (type?.toLowerCase()) {
+      case "mobile":
+        return <Smartphone className="w-6 h-6" />;
+      case "tablet":
+        return <Tablet className="w-6 h-6" />;
+      default:
+        return <Monitor className="w-6 h-6" />;
+    }
+  };
 
   const handleSetPassword = async (
     event: React.FormEvent<HTMLFormElement>
@@ -112,8 +247,8 @@ const Index = () => {
     } catch (error: unknown) {
       const errorCode =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 
@@ -211,6 +346,152 @@ const Index = () => {
                   </h2>
                 </div>
 
+
+                {/* Security and Active Devices */}
+                <div className="border border-gray-200 rounded-xl p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-5 w-5 text-blue-600" />
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Security & Devices
+                      </h2>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={loadSessions}
+                      disabled={sessionsLoading}
+                      className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                    >
+                      <RefreshCw
+                        className={`h-4 w-4 ${sessionsLoading ? "animate-spin" : ""
+                          }`}
+                      />
+                      Refresh
+                    </button>
+                  </div>
+
+                  <p className="text-sm text-gray-600 mb-4">
+                    Review devices currently signed in to your InternArea account.
+                  </p>
+
+                  {sessionMessage && (
+                    <div
+                      role="status"
+                      className={`rounded-lg p-3 text-sm mb-4 ${sessionError
+                          ? "bg-red-50 text-red-700"
+                          : "bg-green-50 text-green-700"
+                        }`}
+                    >
+                      {sessionMessage}
+                    </div>
+                  )}
+
+                  {sessionsLoading ? (
+                    <p className="text-sm text-gray-500 py-4">
+                      Loading active devices...
+                    </p>
+                  ) : sessions.length === 0 ? (
+                    <p className="text-sm text-gray-500 py-4">
+                      No active sessions found.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {sessions.map((session) => {
+                        const isCurrent =
+                          session.sessionId === currentSessionId;
+
+                        return (
+                          <div
+                            key={session.sessionId}
+                            className="border border-gray-200 rounded-lg p-4"
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                              <div className="flex gap-3 min-w-0">
+                                <div className="rounded-lg bg-blue-50 text-blue-600 p-3 h-fit">
+                                  {getDeviceIcon(session.deviceType)}
+                                </div>
+
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="font-semibold text-gray-900">
+                                      {session.deviceModel ||
+                                        session.deviceType ||
+                                        "Unknown device"}
+                                    </h3>
+
+                                    {isCurrent && (
+                                      <span className="text-xs rounded-full bg-green-100 text-green-700 px-2 py-1">
+                                        This device
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <p className="text-sm text-gray-600 mt-1">
+                                    {session.browser || "Unknown browser"}
+                                    {" · "}
+                                    {session.operatingSystem || "Unknown OS"}
+                                  </p>
+
+                                  <p className="text-xs text-gray-500 mt-2 break-all">
+                                    IP: {session.ipAddress || "Unavailable"}
+                                  </p>
+
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    Signed in:{" "}
+                                    {session.verifiedAt
+                                      ? new Date(session.verifiedAt).toLocaleString()
+                                      : "Unavailable"}
+                                  </p>
+
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    Last active:{" "}
+                                    {session.lastSeenAt
+                                      ? new Date(session.lastSeenAt).toLocaleString()
+                                      : "Unavailable"}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {!isCurrent && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    revokeSession(session.sessionId)
+                                  }
+                                  disabled={revokingSession === session.sessionId}
+                                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                >
+                                  <LogOut className="h-4 w-4" />
+                                  {revokingSession === session.sessionId
+                                    ? "Signing out..."
+                                    : "Sign out"}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {sessions.some(
+                    (session) => session.sessionId !== currentSessionId
+                  ) && (
+                      <button
+                        type="button"
+                        onClick={revokeOtherSessions}
+                        disabled={revokingSession === "others"}
+                        className="w-full mt-4 rounded-lg bg-red-600 text-white py-3 font-medium hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {revokingSession === "others"
+                          ? "Signing out other devices..."
+                          : "Sign out all other devices"}
+                      </button>
+                    )}
+                </div>
+
+
                 <p className="text-sm text-gray-600 mb-4">
                   {hasPasswordProvider
                     ? "Email/password sign-in is already linked to this account."
@@ -221,11 +502,10 @@ const Index = () => {
                   <div
                     role="status"
                     aria-live="polite"
-                    className={`mb-4 rounded-lg p-3 text-sm ${
-                      messageType === "success"
-                        ? "bg-green-50 text-green-700"
-                        : "bg-red-50 text-red-700"
-                    }`}
+                    className={`mb-4 rounded-lg p-3 text-sm ${messageType === "success"
+                      ? "bg-green-50 text-green-700"
+                      : "bg-red-50 text-red-700"
+                      }`}
                   >
                     {message}
                   </div>
@@ -299,7 +579,7 @@ const Index = () => {
                             setConfirmPassword(event.target.value)
                           }
                           placeholder="Enter the password again"
-                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 pr-11 text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 pr-11 text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
 
                         <button

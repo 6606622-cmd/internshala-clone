@@ -4,6 +4,7 @@ const cloudinary = require("cloudinary").v2;
 
 const router = express.Router();
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
+const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 
 const MAX_VIDEO_SIZE = 50 * 1024 * 1024; // 50 MB
 
@@ -54,6 +55,7 @@ function configureCloudinary() {
 router.post(
   "/video",
   requireFirebaseAuth,
+  requireVerifiedLogin,
   (req, res, next) => {
     upload.single("video")(req, res, (error) => {
       if (error) {
