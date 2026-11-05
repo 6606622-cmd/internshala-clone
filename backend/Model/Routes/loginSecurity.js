@@ -1,10 +1,12 @@
+
 const express = require("express");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
+const axios = require("axios");
 const UAParser = require("ua-parser-js");
 
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
+
 const LoginActivity = require("../LoginActivity");
 const LoginOtp = require("../LoginOtp");
 const LoginSession = require("../LoginSession");
@@ -14,6 +16,10 @@ const router = express.Router();
 const OTP_EXPIRY_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 5;
 const IST_TIME_ZONE = "Asia/Kolkata";
+
+// --------------------------------------------------
+// DEVICE INFORMATION
+// --------------------------------------------------
 
 function getDeviceInfo(userAgent) {
   const parser = new UAParser(userAgent);
@@ -47,8 +53,15 @@ function getDeviceInfo(userAgent) {
 }
 
 function isChromeBrowser(browserName) {
-  return browserName === "Chrome" || browserName === "Mobile Chrome";
+  return (
+    browserName === "Chrome" ||
+    browserName === "Mobile Chrome"
+  );
 }
+
+// --------------------------------------------------
+// MOBILE LOGIN TIME RESTRICTION
+// --------------------------------------------------
 
 function isWithinMobileLoginHours() {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -58,14 +71,23 @@ function isWithinMobileLoginHours() {
     hourCycle: "h23",
   }).formatToParts(new Date());
 
-  const hour = Number(parts.find((part) => part.type === "hour").value);
-  const minute = Number(parts.find((part) => part.type === "minute").value);
+  const hour = Number(
+    parts.find((part) => part.type === "hour").value
+  );
+
+  const minute = Number(
+    parts.find((part) => part.type === "minute").value
+  );
 
   const currentMinutes = hour * 60 + minute;
 
   // 10:00 AM inclusive; 1:00 PM exclusive.
   return currentMinutes >= 600 && currentMinutes < 780;
 }
+
+// --------------------------------------------------
+// HASHING HELPERS
+// --------------------------------------------------
 
 function hashOtp(uid, otp) {
   const pepper = process.env.OTP_PEPPER;
@@ -81,10 +103,33 @@ function hashOtp(uid, otp) {
 }
 
 function hashSessionToken(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
 }
 
-async function createLoginSession({ uid, email, activity, userAgent, ipAddress }) {
+function safeCompareHash(first, second) {
+  const firstBuffer = Buffer.from(first, "hex");
+  const secondBuffer = Buffer.from(second, "hex");
+
+  return (
+    firstBuffer.length === secondBuffer.length &&
+    crypto.timingSafeEqual(firstBuffer, secondBuffer)
+  );
+}
+
+// --------------------------------------------------
+// CREATE LOGIN SESSION
+// --------------------------------------------------
+
+async function createLoginSession({
+  uid,
+  email,
+  activity,
+  userAgent,
+  ipAddress,
+}) {
   const sessionToken = crypto.randomBytes(48).toString("hex");
   const sessionId = crypto.randomUUID();
 
@@ -106,6 +151,9 @@ async function createLoginSession({ uid, email, activity, userAgent, ipAddress }
     active: true,
     verifiedAt: new Date(),
     lastSeenAt: new Date(),
+    expiresAt: new Date(
+      Date.now() + 30 * 24 * 60 * 60 * 1000
+    ),
   });
 
   activity.sessionId = session.sessionId;
@@ -117,46 +165,56 @@ async function createLoginSession({ uid, email, activity, userAgent, ipAddress }
   };
 }
 
-function safeCompareHash(first, second) {
-  const firstBuffer = Buffer.from(first, "hex");
-  const secondBuffer = Buffer.from(second, "hex");
+// --------------------------------------------------
+// RESEND LOGIN OTP EMAIL
+// --------------------------------------------------
 
-  return (
-    firstBuffer.length === secondBuffer.length &&
-    crypto.timingSafeEqual(firstBuffer, secondBuffer)
-  );
-}
+async function sendLoginOtpEmail(email, otp) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM;
 
-function getMailer() {
-  if (
-    !process.env.SMTP_HOST ||
-    !process.env.SMTP_USER ||
-    !process.env.SMTP_PASS
-  ) {
-    throw new Error("SMTP configuration is missing");
+  if (!apiKey || !from) {
+    throw new Error("Resend email configuration is missing");
   }
 
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: Number(process.env.SMTP_PORT || 587) === 465,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+  const response = await axios.post(
+    "https://api.resend.com/emails",
+    {
+      from,
+      to: [email],
+      subject: "InternArea login verification code",
+      text: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
     },
-  });
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    }
+  );
+
+  return response.data;
 }
+
+// --------------------------------------------------
+// START LOGIN SECURITY
+// --------------------------------------------------
 
 router.post("/start", requireFirebaseAuth, async (req, res) => {
   let activity;
+  let stage = "initializing";
 
   try {
+    stage = "reading Firebase user";
+
     const uid = req.firebaseUser.uid;
     const email = req.firebaseUser.email || "";
     const userAgent = req.get("user-agent") || "";
     const deviceInfo = getDeviceInfo(userAgent);
-
     const ipAddress = req.ip || "";
+
+    stage = "creating login activity";
 
     activity = await LoginActivity.create({
       firebaseUid: uid,
@@ -170,8 +228,10 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       ...deviceInfo,
     });
 
+    stage = "checking mobile login hours";
+
     if (
-      ["mobile", "tablet"].includes(deviceInfo.device.type) &&
+      deviceInfo.device.type === "mobile" &&
       !isWithinMobileLoginHours()
     ) {
       activity.eventType = "LOGIN_BLOCKED";
@@ -180,6 +240,7 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       activity.failureReason =
         "Mobile login is permitted only between 10:00 AM and 1:00 PM IST.";
 
+      stage = "saving mobile login restriction";
       await activity.save();
 
       return res.status(403).json({
@@ -190,7 +251,10 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       });
     }
 
+    // Non-Chrome browsers do not require email OTP.
     if (!isChromeBrowser(deviceInfo.browser.name)) {
+      stage = "creating non-Chrome login session";
+
       const sessionCredentials = await createLoginSession({
         uid,
         email,
@@ -203,15 +267,15 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       activity.loginStatus = "SUCCESS";
       activity.verificationStatus = "NOT_REQUIRED";
       activity.verificationMethod = "NONE";
-      activity.deviceTrusted = false;
 
+      stage = "saving non-Chrome login success";
       await activity.save();
 
       return res.json({
         success: true,
         otpRequired: false,
-        activityId: activity._id,
         ...sessionCredentials,
+        activityId: activity._id,
         message: "Login successful.",
       });
     }
@@ -219,46 +283,68 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
     if (!email) {
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
-      activity.failureReason = "No registered email is available.";
+      activity.failureReason =
+        "No registered email is available.";
+
+      stage = "saving missing email status";
       await activity.save();
 
       return res.status(400).json({
         success: false,
-        message: "A registered email is required for Chrome verification.",
+        message:
+          "A registered email is required for Chrome verification.",
       });
     }
 
-    // Invalidate any earlier unused challenges for this user.
+    stage = "deleting old OTP challenges";
+
     await LoginOtp.deleteMany({
       firebaseUid: uid,
       verifiedAt: null,
     });
 
-    const otp = crypto.randomInt(100000, 1000000).toString();
+    stage = "generating OTP";
+
+    const otp = crypto
+      .randomInt(100000, 1000000)
+      .toString();
+
+    stage = "creating OTP challenge";
 
     const challenge = await LoginOtp.create({
       firebaseUid: uid,
       email,
       otpHash: hashOtp(uid, otp),
       loginActivityId: activity._id,
-      expiresAt: new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000),
+      expiresAt: new Date(
+        Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000
+      ),
     });
 
     try {
-      const transporter = getMailer();
+      stage = "sending OTP through Resend";
 
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || process.env.SMTP_USER,
-        to: email,
-        subject: "InternArea login verification code",
-        text: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
-      });
+      await sendLoginOtpEmail(email, otp);
     } catch (mailError) {
-      await LoginOtp.deleteOne({ _id: challenge._id });
+      console.error("RESEND OTP DELIVERY FAILED:", {
+        message: mailError.message,
+        code: mailError.code,
+        name: mailError.name,
+        response: mailError.response?.data,
+      });
+
+      stage = "cleaning failed OTP challenge";
+
+      await LoginOtp.deleteOne({
+        _id: challenge._id,
+      });
 
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
-      activity.failureReason = "Email verification could not be sent.";
+      activity.failureReason =
+        "Email verification could not be sent.";
+
+      stage = "saving email delivery failure";
       await activity.save();
 
       throw mailError;
@@ -267,23 +353,38 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
     activity.eventType = "OTP_SENT";
     activity.verificationMethod = "EMAIL_PASSWORD";
     activity.verificationStatus = "PENDING";
+
+    stage = "saving OTP sent activity";
     await activity.save();
 
     return res.json({
       success: true,
       otpRequired: true,
       activityId: activity._id,
-      message: "Verification code sent to your registered email.",
+      message:
+        "Verification code sent to your registered email.",
     });
   } catch (error) {
-    console.error("Login security start error:", error.message);
+    console.error("LOGIN SECURITY START FAILED:", {
+      stage,
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack,
+      response: error.response?.data,
+    });
 
     return res.status(500).json({
       success: false,
       message: "Unable to start login verification.",
+      stage,
     });
   }
 });
+
+// --------------------------------------------------
+// VERIFY LOGIN OTP
+// --------------------------------------------------
 
 router.post("/verify", requireFirebaseAuth, async (req, res) => {
   try {
@@ -310,7 +411,8 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
     if (!challenge) {
       return res.status(400).json({
         success: false,
-        message: "Verification request not found or already used.",
+        message:
+          "Verification request not found or already used.",
       });
     }
 
@@ -331,7 +433,9 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
     const currentUserAgent = req.get("user-agent") || "";
 
     if (activity.userAgent !== currentUserAgent) {
-      await LoginOtp.deleteOne({ _id: challenge._id });
+      await LoginOtp.deleteOne({
+        _id: challenge._id,
+      });
 
       activity.eventType = "OTP_FAILED";
       activity.loginStatus = "BLOCKED";
@@ -350,33 +454,42 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
     }
 
     if (challenge.expiresAt.getTime() <= Date.now()) {
-      await LoginOtp.deleteOne({ _id: challenge._id });
+      await LoginOtp.deleteOne({
+        _id: challenge._id,
+      });
 
       activity.eventType = "OTP_FAILED";
       activity.loginStatus = "FAILED";
       activity.verificationStatus = "FAILED";
       activity.failureReason = "Verification code expired.";
+
       await activity.save();
 
       return res.status(400).json({
         success: false,
         code: "OTP_EXPIRED",
-        message: "Your verification code has expired. Start login again.",
+        message:
+          "Your verification code has expired. Start login again.",
       });
     }
 
     if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
-      await LoginOtp.deleteOne({ _id: challenge._id });
+      await LoginOtp.deleteOne({
+        _id: challenge._id,
+      });
 
       activity.eventType = "OTP_FAILED";
       activity.loginStatus = "BLOCKED";
       activity.verificationStatus = "FAILED";
-      activity.failureReason = "Maximum OTP attempts exceeded.";
+      activity.failureReason =
+        "Maximum OTP attempts exceeded.";
+
       await activity.save();
 
       return res.status(429).json({
         success: false,
-        message: "Too many incorrect attempts. Start login again.",
+        message:
+          "Too many incorrect attempts. Start login again.",
       });
     }
 
@@ -390,6 +503,7 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
       activity.loginStatus = "FAILED";
       activity.verificationStatus = "FAILED";
       activity.failureReason = "Incorrect verification code.";
+
       await activity.save();
 
       return res.status(400).json({
@@ -425,7 +539,9 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
 
     await activity.save();
 
-    await LoginOtp.deleteOne({ _id: challenge._id });
+    await LoginOtp.deleteOne({
+      _id: challenge._id,
+    });
 
     return res.json({
       success: true,
@@ -434,7 +550,12 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
       message: "Email verification successful.",
     });
   } catch (error) {
-    console.error("Login OTP verification error:", error.message);
+    console.error("Login OTP verification error:", {
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack,
+    });
 
     return res.status(500).json({
       success: false,
@@ -443,31 +564,42 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
   }
 });
 
-router.get("/history", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
-  try {
-    const history = await LoginActivity.find({
-      firebaseUid: req.firebaseUser.uid,
-    })
-      .sort({ loginAt: -1 })
-      .limit(100)
-      .select("-__v");
+// --------------------------------------------------
+// LOGIN HISTORY
+// --------------------------------------------------
 
-    return res.json({
-      success: true,
-      history,
-    });
-  } catch (error) {
-    console.error("Login history error:", error.message);
+router.get(
+  "/history",
+  requireFirebaseAuth,
+  requireVerifiedLogin,
+  async (req, res) => {
+    try {
+      const history = await LoginActivity.find({
+        firebaseUid: req.firebaseUser.uid,
+      })
+        .sort({ loginAt: -1 })
+        .limit(100)
+        .select("-__v");
 
-    return res.status(500).json({
-      success: false,
-      message: "Unable to load login history.",
-    });
+      return res.json({
+        success: true,
+        history,
+      });
+    } catch (error) {
+      console.error("Login history error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load login history.",
+      });
+    }
   }
-});
+);
 
+// --------------------------------------------------
+// ACTIVE LOGIN SESSIONS
+// --------------------------------------------------
 
-// GET: List all active login sessions
 router.get(
   "/sessions",
   requireFirebaseAuth,
@@ -497,7 +629,10 @@ router.get(
   }
 );
 
-// POST: Revoke one selected session
+// --------------------------------------------------
+// REVOKE ONE SESSION
+// --------------------------------------------------
+
 router.post(
   "/sessions/:sessionId/revoke",
   requireFirebaseAuth,
@@ -528,7 +663,8 @@ router.post(
 
       session.active = false;
       session.revokedAt = new Date();
-      session.revokedReason = "Signed out by account owner";
+      session.revokedReason =
+        "Signed out by account owner";
 
       await session.save();
 
@@ -547,7 +683,10 @@ router.post(
   }
 );
 
-// POST: Sign out all other devices
+// --------------------------------------------------
+// REVOKE ALL OTHER SESSIONS
+// --------------------------------------------------
+
 router.post(
   "/sessions/revoke-others",
   requireFirebaseAuth,
@@ -558,13 +697,16 @@ router.post(
         {
           firebaseUid: req.firebaseUser.uid,
           active: true,
-          sessionId: { $ne: req.loginSession.sessionId },
+          sessionId: {
+            $ne: req.loginSession.sessionId,
+          },
         },
         {
           $set: {
             active: false,
             revokedAt: new Date(),
-            revokedReason: "Signed out from another device",
+            revokedReason:
+              "Signed out from another device",
           },
         }
       );
@@ -584,6 +726,5 @@ router.post(
     }
   }
 );
-
 
 module.exports = router;
