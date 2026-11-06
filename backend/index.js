@@ -1,4 +1,6 @@
 require("dotenv").config();
+console.log("OTP_PEPPER configured:", Boolean(process.env.OTP_PEPPER));
+console.log("OTP_PEPPER length:", process.env.OTP_PEPPER?.length || 0);
 const bodyparser = require("body-parser");
 const express = require("express");
 const app = express();

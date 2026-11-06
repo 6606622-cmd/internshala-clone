@@ -110,7 +110,7 @@ async function reserveCooldown(firebaseUid, resetMethod) {
                     resetMethod,
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         );
 
         return Boolean(updated);
@@ -187,49 +187,6 @@ async function sendTemporaryPasswordEmail(email, temporaryPassword) {
     });
 }
 
-async function sendTemporaryPasswordSms(phoneNumber, temporaryPassword) {
-    const {
-        TWILIO_ACCOUNT_SID,
-        TWILIO_AUTH_TOKEN,
-        TWILIO_FROM_NUMBER,
-    } = process.env;
-
-    if (
-        !TWILIO_ACCOUNT_SID ||
-        !TWILIO_AUTH_TOKEN ||
-        !TWILIO_FROM_NUMBER
-    ) {
-        throw new Error("SMS delivery is not configured.");
-    }
-
-    const body = new URLSearchParams({
-        To: phoneNumber,
-        From: TWILIO_FROM_NUMBER,
-        Body:
-            `Your InternArea temporary password is: ${temporaryPassword}. ` +
-            "Sign in and change it immediately. If you did not request this, contact support.",
-    });
-
-    const response = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
-        {
-            method: "POST",
-            headers: {
-                Authorization:
-                    "Basic " +
-                    Buffer.from(
-                        `${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`
-                    ).toString("base64"),
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body,
-        }
-    );
-
-    if (!response.ok) {
-        throw new Error("SMS delivery failed.");
-    }
-}
 
 async function releaseCooldownAfterDeliveryFailure(
     firebaseUid,
@@ -285,6 +242,140 @@ router.get("/", (req, res) => {
     });
 });
 
+// AES-256-GCM encryption for temporary passwords.
+function getRecoveryEncryptionKey() {
+    const keyHex = process.env.RECOVERY_ENCRYPTION_KEY;
+
+    if (!keyHex || !/^[a-fA-F0-9]{64}$/.test(keyHex)) {
+        throw new Error(
+            "RECOVERY_ENCRYPTION_KEY must be exactly 64 hexadecimal characters."
+        );
+    }
+
+    return Buffer.from(keyHex, "hex");
+}
+
+function encryptTemporaryPassword(password) {
+    const key = getRecoveryEncryptionKey();
+    const iv = crypto.randomBytes(12);
+
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+
+    const encrypted = Buffer.concat([
+        cipher.update(password, "utf8"),
+        cipher.final(),
+    ]);
+
+    return {
+        encrypted: encrypted.toString("hex"),
+        iv: iv.toString("hex"),
+        authTag: cipher.getAuthTag().toString("hex"),
+    };
+}
+
+function decryptTemporaryPassword(challenge) {
+    const key = getRecoveryEncryptionKey();
+
+    if (
+        !challenge?.temporaryPasswordEncrypted ||
+        !challenge?.temporaryPasswordIv ||
+        !challenge?.temporaryPasswordAuthTag
+    ) {
+        throw new Error("Encrypted temporary password is unavailable.");
+    }
+
+    const decipher = crypto.createDecipheriv(
+        "aes-256-gcm",
+        key,
+        Buffer.from(challenge.temporaryPasswordIv, "hex")
+    );
+
+    decipher.setAuthTag(
+        Buffer.from(challenge.temporaryPasswordAuthTag, "hex")
+    );
+
+    return Buffer.concat([
+        decipher.update(
+            Buffer.from(challenge.temporaryPasswordEncrypted, "hex")
+        ),
+        decipher.final(),
+    ]).toString("utf8");
+}
+
+async function deliverTemporaryPassword(user, challenge) {
+    try {
+        // Recover the exact same password on every retry.
+        const temporaryPassword = decryptTemporaryPassword(challenge);
+
+        // Update Firebase only if this password has not already been applied.
+        if (!challenge.passwordUpdatedAt) {
+            await auth.updateUser(user.uid, {
+                password: temporaryPassword,
+            });
+
+            const latestUser = await auth.getUser(user.uid);
+
+            await auth.setCustomUserClaims(user.uid, {
+                ...(latestUser.customClaims || {}),
+                mustChangePassword: true,
+            });
+
+            await PasswordResetChallenge.updateOne(
+                { _id: challenge._id },
+                { $set: { passwordUpdatedAt: new Date() } }
+            );
+        }
+
+        await PasswordResetChallenge.updateOne(
+            { _id: challenge._id },
+            { $inc: { deliveryAttempts: 1 } }
+        );
+
+        // Send the same password that was saved in encrypted form.
+        await sendTemporaryPasswordEmail(
+            user.email,
+            temporaryPassword
+        );
+
+        await PasswordResetChallenge.updateOne(
+            { _id: challenge._id },
+            { $set: { deliveryStatus: "sent" } }
+        );
+
+        await markHistory(challenge.historyId, {
+            verificationStatus: "completed",
+            completedAt: new Date(),
+            deliveryStatus: "sent",
+            failureReason: "",
+        });
+
+        // Revoke old Firebase refresh tokens after successful delivery.
+        try {
+            await auth.revokeRefreshTokens(user.uid);
+        } catch (revokeError) {
+            console.error(
+                "Refresh-token revocation failed:",
+                revokeError.code || revokeError.message
+            );
+        }
+
+        return true;
+    } catch (error) {
+        await PasswordResetChallenge.updateOne(
+            { _id: challenge._id },
+            { $set: { deliveryStatus: "failed" } }
+        );
+
+        await markHistory(challenge.historyId, {
+            verificationStatus: "failed",
+            deliveryStatus: "failed",
+            failureReason: "Temporary password delivery or processing failed",
+        });
+
+        throw error;
+    }
+}
+
 // EMAIL: request a verification code.
 router.post("/request", async (req, res) => {
     const email =
@@ -339,7 +430,7 @@ router.post("/request", async (req, res) => {
                     historyId: history._id,
                 },
             },
-            { upsert: true, new: true, runValidators: true }
+            { upsert: true, returnDocument: "after", runValidators: true }
         );
 
         try {
@@ -470,7 +561,7 @@ router.post("/resend", async (req, res) => {
                     otpResendCount: 1,
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         );
 
         if (!claimed) {
@@ -594,7 +685,7 @@ router.post("/verify", async (req, res) => {
                     otpAttempts: { $lt: MAX_OTP_ATTEMPTS },
                 },
                 { $inc: { otpAttempts: 1 } },
-                { new: true }
+                { returnDocument: "after" }
             );
 
             if (updated && updated.otpAttempts >= MAX_OTP_ATTEMPTS) {
@@ -630,7 +721,7 @@ router.post("/verify", async (req, res) => {
                     ),
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         );
 
         if (!claimed) {
@@ -660,24 +751,32 @@ router.post("/verify", async (req, res) => {
     }
 });
 
-// EMAIL: consume the reset token and send a temporary password.
+
 router.post("/complete-email", async (req, res) => {
     const email =
         typeof req.body.email === "string"
             ? req.body.email.trim().toLowerCase()
             : "";
-    const resetToken =
-        typeof req.body.resetToken === "string" ? req.body.resetToken : "";
 
-    if (!validEmail(email) || !/^[a-f0-9]{64}$/i.test(resetToken)) {
+    const resetToken =
+        typeof req.body.resetToken === "string"
+            ? req.body.resetToken
+            : "";
+
+    const newPassword = req.body.newPassword;
+
+    if (
+        !validEmail(email) ||
+        !/^[a-f0-9]{64}$/i.test(resetToken) ||
+        typeof newPassword !== "string" ||
+        newPassword.length < 8 ||
+        newPassword.length > 128
+    ) {
         return res.status(400).json({
             success: false,
-            message: "Your recovery session is invalid. Verify your code again.",
+            message: "Invalid recovery details or password. Please check and try again.",
         });
     }
-
-    let activeChallenge = null;
-    let passwordUpdated = false;
 
     try {
         const user = await findPasswordAccountByEmail(email);
@@ -691,6 +790,7 @@ router.post("/complete-email", async (req, res) => {
 
         const tokenHash = hashSecret(resetToken);
 
+        // Find the matching, unexpired recovery session.
         const challenge = await PasswordResetChallenge.findOne({
             firebaseUid: user.uid,
             resetMethod: "email",
@@ -707,8 +807,7 @@ router.post("/complete-email", async (req, res) => {
             });
         }
 
-        activeChallenge = challenge;
-
+        // Consume the token atomically so it cannot be reused.
         const consumed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
@@ -721,7 +820,7 @@ router.post("/complete-email", async (req, res) => {
                     resetTokenExpiresAt: null,
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         );
 
         if (!consumed) {
@@ -731,37 +830,16 @@ router.post("/complete-email", async (req, res) => {
             });
         }
 
-        const temporaryPassword = generateTemporaryPassword();
-
+        // Set the exact password chosen by the user.
         await auth.updateUser(user.uid, {
-            password: temporaryPassword,
-        });
-        passwordUpdated = true;
-
-        await auth.setCustomUserClaims(user.uid, {
-            ...(user.customClaims || {}),
-            mustChangePassword: true,
+            password: newPassword,
         });
 
-        try {
-            await sendTemporaryPasswordEmail(
-                user.email || email,
-                temporaryPassword
-            );
-        } catch (deliveryError) {
-            await markHistory(challenge.historyId, {
-                verificationStatus: "failed",
-                failureReason: "Temporary password email delivery failed",
-            });
+        // Remove any old temporary-password requirement.
+        const updatedClaims = { ...(user.customClaims || {}) };
+        delete updatedClaims.mustChangePassword;
 
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "email",
-                challenge.historyId
-            );
-
-            throw deliveryError;
-        }
+        await auth.setCustomUserClaims(user.uid, updatedClaims);
 
         await markHistory(challenge.historyId, {
             verificationStatus: "completed",
@@ -771,31 +849,22 @@ router.post("/complete-email", async (req, res) => {
 
         return res.json({
             success: true,
-            mustChangePassword: true,
-            message:
-                "A temporary password has been sent to your registered email. Sign in and change it immediately.",
+            message: "Your password has been updated successfully. You can now sign in.",
         });
     } catch (error) {
-        console.error("Email password reset failed:", error.message);
-
-        if (activeChallenge && passwordUpdated) {
-            try {
-                await releaseCooldownAfterDeliveryFailure(
-                    activeChallenge.firebaseUid,
-                    "email",
-                    activeChallenge.historyId
-                );
-            } catch (_) {}
-        }
+        console.error(
+            "Email password reset failed:",
+            error.code || error.message
+        );
 
         return res.status(500).json({
             success: false,
-            message:
-                "Unable to finish recovery. If delivery failed, start recovery again.",
+            message: "Unable to finish recovery. Please try again.",
         });
     }
 });
-// PHONE: reserve the daily recovery window before Firebase SMS verification.
+
+// PHONE: prepare recovery before Firebase sends its OTP.
 router.post("/phone/request", async (req, res) => {
     const phoneNumber =
         typeof req.body.phoneNumber === "string"
@@ -805,33 +874,33 @@ router.post("/phone/request", async (req, res) => {
     if (!validPhone(phoneNumber)) {
         return res.status(400).json({
             success: false,
-            message: "Enter a valid phone number including the country code.",
+            message: "Enter a valid phone number including country code.",
         });
     }
 
     try {
-        let user = null;
+        let user;
 
         try {
             user = await auth.getUserByPhoneNumber(phoneNumber);
         } catch (error) {
-            if (error.code !== "auth/user-not-found") throw error;
+            if (error.code === "auth/user-not-found") {
+                return res.json({
+                    success: true,
+                    message: "If an eligible account exists, continue with phone verification.",
+                });
+            }
+            throw error;
         }
 
-        if (!user) {
+        const hasPasswordProvider = (user.providerData || []).some(
+            provider => provider.providerId === "password"
+        );
+
+        if (!hasPasswordProvider || !user.email) {
             return res.json({
                 success: true,
-                message:
-                    "If an eligible account exists, continue with Firebase phone verification.",
-            });
-        }
-
-        const allowed = await reserveCooldown(user.uid, "phone");
-
-        if (!allowed) {
-            return res.status(429).json({
-                success: false,
-                message: "You can use this option only once per day.",
+                message: "If an eligible account exists, continue with phone verification.",
             });
         }
 
@@ -841,7 +910,7 @@ router.post("/phone/request", async (req, res) => {
             { firebaseUid: user.uid },
             {
                 $set: {
-                    email: user.email || "",
+                    email: user.email,
                     resetMethod: "phone",
                     otpHash: "",
                     otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
@@ -853,16 +922,15 @@ router.post("/phone/request", async (req, res) => {
                     historyId: history._id,
                 },
             },
-            { upsert: true, new: true, runValidators: true }
+            { upsert: true, returnDocument: "after", runValidators: true }
         );
 
         return res.json({
             success: true,
-            message:
-                "If an eligible account exists, continue with Firebase phone verification.",
+            message: "Continue with Firebase phone verification.",
         });
     } catch (error) {
-        console.error("Phone reset request failed:", error.message);
+        console.error("Phone recovery request failed:", error.message);
 
         return res.status(500).json({
             success: false,
@@ -870,8 +938,8 @@ router.post("/phone/request", async (req, res) => {
         });
     }
 });
-
-// PHONE: verify Firebase's signed-in identity and change its password.
+// PHONE: verify Firebase OTP, save an encrypted password,
+// update Firebase, and deliver it through registered email.
 router.post("/phone/complete", async (req, res) => {
     const idToken =
         typeof req.body.idToken === "string" ? req.body.idToken : "";
@@ -882,9 +950,6 @@ router.post("/phone/complete", async (req, res) => {
             message: "Complete phone verification before continuing.",
         });
     }
-
-    let activePhoneChallenge = null;
-    let phonePasswordUpdated = false;
 
     try {
         const decoded = await auth.verifyIdToken(idToken, true);
@@ -901,7 +966,18 @@ router.post("/phone/complete", async (req, res) => {
         if (!user.phoneNumber || user.phoneNumber !== decoded.phone_number) {
             return res.status(403).json({
                 success: false,
-                message: "The verified phone number does not match this account.",
+                message: "Verified phone number does not match this account.",
+            });
+        }
+
+        const hasPasswordProvider = (user.providerData || []).some(
+            provider => provider.providerId === "password"
+        );
+
+        if (!hasPasswordProvider || !user.email) {
+            return res.status(403).json({
+                success: false,
+                message: "This account is not eligible for password recovery.",
             });
         }
 
@@ -909,111 +985,176 @@ router.post("/phone/complete", async (req, res) => {
             firebaseUid: user.uid,
             resetMethod: "phone",
             otpExpiresAt: { $gt: new Date() },
+            deliveryStatus: "not_started",
         });
 
         if (!challenge) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "The phone recovery session is missing or expired. Start recovery again.",
+                message: "Phone recovery session is missing, expired, or already used.",
             });
         }
 
-        activePhoneChallenge = challenge;
+        const allowed = await reserveCooldown(user.uid, "phone");
 
-        const consumed = await PasswordResetChallenge.findOneAndUpdate(
+        if (!allowed) {
+            return res.status(429).json({
+                success: false,
+                message: "Password recovery is limited to once every 24 hours.",
+            });
+        }
+
+        // Generate and encrypt before changing the Firebase password.
+        const temporaryPassword = generateTemporaryPassword();
+        const encrypted = encryptTemporaryPassword(temporaryPassword);
+
+        // Atomically consume the phone verification and save the encrypted password.
+        const claimed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
+                firebaseUid: user.uid,
                 resetMethod: "phone",
                 otpExpiresAt: { $gt: new Date() },
+                deliveryStatus: "not_started",
+                temporaryPasswordEncrypted: "",
             },
             {
                 $set: {
                     otpExpiresAt: null,
                     otpHash: "",
+                    temporaryPasswordEncrypted: encrypted.encrypted,
+                    temporaryPasswordIv: encrypted.iv,
+                    temporaryPasswordAuthTag: encrypted.authTag,
+                    deliveryStatus: "pending",
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
+        ).select(
+            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
         );
 
-        if (!consumed) {
+        if (!claimed) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "The phone recovery session has expired or was already used.",
+                message: "Phone recovery session was already used. Please try again.",
             });
         }
 
-        await markHistory(challenge.historyId, {
+        await markHistory(claimed.historyId, {
             verificationStatus: "verified",
             verifiedAt: new Date(),
+            deliveryStatus: "pending",
         });
 
-        const temporaryPassword = generateTemporaryPassword();
-
-        await auth.updateUser(user.uid, {
-            password: temporaryPassword,
-        });
-        phonePasswordUpdated = true;
-
-        await auth.setCustomUserClaims(user.uid, {
-            ...(user.customClaims || {}),
-            mustChangePassword: true,
-        });
-
-        try {
-            await sendTemporaryPasswordSms(
-                user.phoneNumber,
-                temporaryPassword
-            );
-        } catch (deliveryError) {
-            await markHistory(challenge.historyId, {
-                verificationStatus: "failed",
-                failureReason: "Temporary password SMS delivery failed",
-            });
-
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "phone",
-                challenge.historyId
-            );
-
-            throw deliveryError;
-        }
-
-        await markHistory(challenge.historyId, {
-            verificationStatus: "completed",
-            completedAt: new Date(),
-            failureReason: "",
-        });
+        await deliverTemporaryPassword(user, claimed);
 
         return res.json({
             success: true,
             mustChangePassword: true,
             message:
-                "A temporary password has been sent to your verified phone. Sign in and change it immediately.",
+                "Phone verified. A temporary password has been sent to your registered email. Sign in and change it immediately.",
         });
     } catch (error) {
-        console.error("Phone password reset failed:", error.message);
+        console.error(
+            "Phone password recovery failed:",
+            error.code || error.message
+        );
 
-        if (activePhoneChallenge && phonePasswordUpdated) {
-            try {
-                await releaseCooldownAfterDeliveryFailure(
-                    activePhoneChallenge.firebaseUid,
-                    "phone",
-                    activePhoneChallenge.historyId
-                );
-            } catch (_) {}
-        }
-
-        return res.status(401).json({
+        return res.status(500).json({
             success: false,
             message:
-                "Phone recovery failed or delivery is unavailable. Start recovery again if needed.",
+                "Recovery could not be completed. If your password was changed, use the delivery retry option.",
         });
     }
 });
 
+// PHONE: retry delivery of the already-generated temporary password.
+router.post("/phone/retry-delivery", async (req, res) => {
+    const idToken =
+        typeof req.body.idToken === "string" ? req.body.idToken : "";
+
+    if (!idToken || idToken.length > 10000) {
+        return res.status(401).json({
+            success: false,
+            message: "Please verify your phone number again.",
+        });
+    }
+
+    try {
+        const decoded = await auth.verifyIdToken(idToken, true);
+
+        if (decoded.firebase?.sign_in_provider !== "phone") {
+            return res.status(403).json({
+                success: false,
+                message: "Phone verification is required.",
+            });
+        }
+
+        const user = await auth.getUser(decoded.uid);
+
+        if (!user.phoneNumber || user.phoneNumber !== decoded.phone_number) {
+            return res.status(403).json({
+                success: false,
+                message: "Verified phone number does not match this account.",
+            });
+        }
+
+        const challenge = await PasswordResetChallenge.findOne({
+            firebaseUid: user.uid,
+            resetMethod: "phone",
+            deliveryStatus: "failed",
+            temporaryPasswordEncrypted: { $ne: "" },
+        }).select(
+            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
+        );
+
+        if (!challenge || !user.email) {
+            return res.status(400).json({
+                success: false,
+                message: "No failed password delivery is available to retry.",
+            });
+        }
+
+        // Claim the failed delivery so simultaneous retries cannot run together.
+        const claimed = await PasswordResetChallenge.findOneAndUpdate(
+            {
+                _id: challenge._id,
+                deliveryStatus: "failed",
+            },
+            {
+                $set: { deliveryStatus: "pending" },
+            },
+            { returnDocument: "after" }
+        ).select(
+            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
+        );
+
+        if (!claimed) {
+            return res.status(409).json({
+                success: false,
+                message: "A delivery attempt is already in progress.",
+            });
+        }
+
+        await deliverTemporaryPassword(user, claimed);
+
+        return res.json({
+            success: true,
+            mustChangePassword: true,
+            message: "Your temporary password has been sent to your registered email.",
+        });
+    } catch (error) {
+        console.error(
+            "Temporary password delivery retry failed:",
+            error.code || error.message
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Unable to retry delivery right now.",
+        });
+    }
+});
 
 /**
  * Complete a forced password change.

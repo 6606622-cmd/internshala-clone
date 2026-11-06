@@ -7,7 +7,6 @@ const passwordResetChallengeSchema = new mongoose.Schema(
             type: String,
             required: true,
             unique: true,
-            index: true,
         },
 
         email: {
@@ -61,6 +60,41 @@ const passwordResetChallengeSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "PasswordResetHistory",
             required: true,
+        },
+
+        // Temporary-password delivery tracking
+        temporaryPasswordEncrypted: {
+            type: String,
+            default: "",
+            select: false,
+        },
+
+        temporaryPasswordIv: {
+            type: String,
+            default: "",
+            select: false,
+        },
+
+        temporaryPasswordAuthTag: {
+            type: String,
+            default: "",
+            select: false,
+        },
+
+        deliveryStatus: {
+            type: String,
+            enum: ["not_started", "pending", "sent", "failed"],
+            default: "not_started",
+        },
+
+        deliveryAttempts: {
+            type: Number,
+            default: 0,
+        },
+
+        passwordUpdatedAt: {
+            type: Date,
+            default: null,
         },
     },
     { timestamps: true }

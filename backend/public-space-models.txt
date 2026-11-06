@@ -1,0 +1,294 @@
+
+
+==================== Model/PublicSpacePost.js ====================
+
+
+const mongoose = require("mongoose");
+
+const publicSpacePostSchema = new mongoose.Schema(
+  {
+    authorUid: {
+      type: String,
+      required: true,
+      index: true,
+    },
+
+    authorProfile: {
+      displayName: { type: String, default: "" },
+      username: { type: String, default: "" },
+      photoURL: { type: String, default: "" },
+    },
+
+    friendCountAtPosting: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
+    },
+
+    text: {
+      type: String,
+      trim: true,
+      maxlength: 5000,
+      default: "",
+    },
+
+    media: [
+      {
+        type: {
+          type: String,
+          enum: ["image", "video"],
+          required: true,
+        },
+        url: { type: String, required: true },
+        storageKey: { type: String, default: "" },
+        contentHash: { type: String, default: "" },
+      },
+    ],
+
+    mediaType: {
+      type: String,
+      enum: ["text", "image", "video", "mixed"],
+      required: true,
+      default: "text",
+    },
+
+    privacy: {
+      type: String,
+      enum: ["public", "friends"],
+      default: "public",
+    },
+
+    hashtags: [{ type: String, lowercase: true, trim: true }],
+    mentions: [{ type: String, trim: true }],
+
+    likesCount: { type: Number, default: 0, min: 0 },
+    commentsCount: { type: Number, default: 0, min: 0 },
+    sharesCount: { type: Number, default: 0, min: 0 },
+    viewsCount: { type: Number, default: 0, min: 0 },
+
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
+    editUntil: { type: Date, required: true },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+publicSpacePostSchema.index({ authorUid: 1, createdAt: -1 });
+publicSpacePostSchema.index({ privacy: 1, createdAt: -1 });
+publicSpacePostSchema.index({ hashtags: 1, createdAt: -1 });
+
+module.exports =
+  mongoose.models.PublicSpacePost ||
+  mongoose.model("PublicSpacePost", publicSpacePostSchema);
+
+
+==================== Model/PublicSpaceFriendship.js ====================
+
+
+const mongoose = require("mongoose");
+
+const publicSpaceFriendshipSchema = new mongoose.Schema(
+  {
+    // Store each pair in a consistent order to prevent duplicate requests.
+    userAUid: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    userBUid: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    requestedByUid: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    status: {
+      type: String,
+      enum: ["pending", "accepted", "rejected", "blocked"],
+      default: "pending",
+      index: true,
+    },
+
+    respondedAt: {
+      type: Date,
+      default: null,
+    },
+
+    blockedByUid: {
+      type: String,
+      default: "",
+    },
+  },
+  { timestamps: true }
+);
+
+// A pair can have only one friendship record.
+publicSpaceFriendshipSchema.index(
+  { userAUid: 1, userBUid: 1 },
+  { unique: true }
+);
+
+// Find accepted friendships for either user.
+publicSpaceFriendshipSchema.index(
+  { userAUid: 1, status: 1 }
+);
+
+publicSpaceFriendshipSchema.index(
+  { userBUid: 1, status: 1 }
+);
+
+module.exports =
+  mongoose.models.PublicSpaceFriendship ||
+  mongoose.model("PublicSpaceFriendship", publicSpaceFriendshipSchema);
+
+
+==================== Model/PublicSpaceInteraction.js ====================
+
+
+const mongoose = require("mongoose");
+
+const publicSpaceInteractionSchema = new mongoose.Schema(
+  {
+    postId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PublicSpacePost",
+      required: true,
+      index: true,
+    },
+    userUid: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true,
+    },
+    type: {
+      type: String,
+      enum: ["like", "comment", "save", "report"],
+      required: true,
+      index: true,
+    },
+    text: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+      default: "",
+    },
+    reportReason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: "",
+    },
+  },
+  { timestamps: true }
+);
+
+// One like, save, or report per user per post.
+// A user can leave multiple comments on a post.
+publicSpaceInteractionSchema.index(
+  { postId: 1, userUid: 1, type: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      type: { $in: ["like", "save", "report"] },
+    },
+  }
+);
+
+publicSpaceInteractionSchema.index({
+  userUid: 1,
+  type: 1,
+  createdAt: -1,
+});
+
+module.exports =
+  mongoose.models.PublicSpaceInteraction ||
+  mongoose.model("PublicSpaceInteraction", publicSpaceInteractionSchema);
+
+
+==================== Model/PublicSpaceNotification.js ====================
+
+
+const mongoose = require("mongoose");
+
+const publicSpaceNotificationSchema = new mongoose.Schema(
+  {
+    recipientUid: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true,
+    },
+
+    actorUid: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    type: {
+      type: String,
+      required: true,
+      enum: [
+        "like",
+        "comment",
+        "share",
+        "friend_request",
+        "friend_accepted",
+        "mention",
+      ],
+    },
+
+    message: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 300,
+    },
+
+    postId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PublicSpacePost",
+      default: null,
+    },
+
+    friendshipId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PublicSpaceFriendship",
+      default: null,
+    },
+
+    isRead: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    readAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { timestamps: true }
+);
+
+publicSpaceNotificationSchema.index({
+  recipientUid: 1,
+  isRead: 1,
+  createdAt: -1,
+});
+
+module.exports =
+  mongoose.models.PublicSpaceNotification ||
+  mongoose.model(
+    "PublicSpaceNotification",
+    publicSpaceNotificationSchema
+  );

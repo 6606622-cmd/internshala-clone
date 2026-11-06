@@ -44,9 +44,14 @@ const loginSessionSchema = new mongoose.Schema(
       required: true,
     },
 
-    lastSeenAt: {
+    lastSeenAt: { 
+      type: Date, 
+      default: Date.now 
+    },
+
+    expiresAt: {
       type: Date,
-      default: Date.now,
+      required: true,
     },
 
     revokedAt: Date,
@@ -57,5 +62,9 @@ const loginSessionSchema = new mongoose.Schema(
 
 loginSessionSchema.index({ firebaseUid: 1, active: 1 });
 loginSessionSchema.index({ firebaseUid: 1, createdAt: -1 });
+loginSessionSchema.index(
+  { expiresAt: 1 },
+  { expireAfterSeconds: 0 }
+);
 
 module.exports = mongoose.model("LoginSession", loginSessionSchema);

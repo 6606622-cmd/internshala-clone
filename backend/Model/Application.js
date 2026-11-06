@@ -34,8 +34,9 @@ const ApplicationSchema = new mongoose.Schema({
         required: true,
         index: true,
     },
-
-});
+},
+    { timestamps: true }
+);
 
 module.exports =
     mongoose.models.Application ||

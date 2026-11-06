@@ -25,10 +25,10 @@ async function requireFirebaseAuth(req, res, next) {
 
   try {
     const decodedToken = await auth.verifyIdToken(idToken, true);
-
     req.firebaseUser = {
       uid: decodedToken.uid,
       email: decodedToken.email || "",
+      mustChangePassword: decodedToken.mustChangePassword === true,
     };
 
     return next();

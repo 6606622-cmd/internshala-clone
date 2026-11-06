@@ -13,6 +13,15 @@ const requireVerifiedLogin = async (req, res, next) => {
       });
     }
 
+    if (firebaseUser.mustChangePassword === true) {
+      return res.status(403).json({
+        success: false,
+        code: "PASSWORD_CHANGE_REQUIRED",
+        mustChangePassword: true,
+        message: "Please change your temporary password before continuing.",
+      });
+    }
+
     const sessionToken = req.headers["x-login-session"];
 
     if (!sessionToken || typeof sessionToken !== "string") {
@@ -32,6 +41,7 @@ const requireVerifiedLogin = async (req, res, next) => {
       firebaseUid,
       tokenHash,
       active: true,
+      expiresAt: { $gt: new Date() },
     });
 
     if (!session) {
