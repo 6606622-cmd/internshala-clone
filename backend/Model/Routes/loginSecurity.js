@@ -727,4 +727,35 @@ router.post(
   }
 );
 
+// --------------------------------------------------
+// LOGOUT CURRENT SESSION
+// --------------------------------------------------
+
+router.post(
+  "/logout",
+  requireFirebaseAuth,
+  requireVerifiedLogin,
+  async (req, res) => {
+    try {
+      req.loginSession.active = false;
+      req.loginSession.revokedAt = new Date();
+      req.loginSession.revokedReason = "User logged out";
+
+      await req.loginSession.save();
+
+      return res.json({
+        success: true,
+        message: "Session signed out successfully.",
+      });
+    } catch (error) {
+      console.error("Logout session error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to revoke login session.",
+      });
+    }
+  }
+);
+
 module.exports = router;

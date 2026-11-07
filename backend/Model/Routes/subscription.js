@@ -46,20 +46,8 @@ const getISTMonth = (date = new Date()) => {
     return `${year}-${month}`;
 };
 
-const isPaymentWindowOpen = () => {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: "Asia/Kolkata",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-    }).formatToParts(new Date());
-
-    const hour = Number(parts.find((p) => p.type === "hour").value);
-    const minute = Number(parts.find((p) => p.type === "minute").value);
-    const totalMinutes = hour * 60 + minute;
-
-    return totalMinutes >= 300 && totalMinutes <= 705;
-};
+// TEMPORARY TESTING: Allow subscription payments 24/7.
+const isPaymentWindowOpen = () => true;
 
 const addOneMonth = (date) => {
     const result = new Date(date);
@@ -195,14 +183,8 @@ router.get("/me", async (req, res) => {
 // CREATE RAZORPAY ORDER
 router.post("/create-order", async (req, res) => {
     try {
-        if (!isPaymentWindowOpen()) {
-            return res.status(403).json({
-                success: false,
-                message:
-                    "Subscription purchases are available only between 5:00 AM and 11:45 AM IST. Please try again during this time.",
-            });
-        }
-
+     // TEMPORARY TESTING: Allow subscription purchases 24/7.
+// Original payment time restriction will be restored after testing.
         const { plan } = req.body || {};
 
         if (!Object.prototype.hasOwnProperty.call(PLANS, plan)) {
