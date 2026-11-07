@@ -1,7 +1,7 @@
 
 const express = require("express");
 const crypto = require("crypto");
-const axios = require("axios");
+const nodemailer = require("nodemailer");
 const UAParser = require("ua-parser-js");
 
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
@@ -164,39 +164,47 @@ async function createLoginSession({
     sessionToken,
   };
 }
-
 // --------------------------------------------------
-// RESEND LOGIN OTP EMAIL
+// GMAIL SMTP LOGIN OTP EMAIL
 // --------------------------------------------------
 
 async function sendLoginOtpEmail(email, otp) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM;
+  const smtpEmail = process.env.SMTP_EMAIL;
+  const smtpPassword = process.env.SMTP_APP_PASSWORD;
 
-  if (!apiKey || !from) {
-    throw new Error("Resend email configuration is missing");
+  if (!smtpEmail || !smtpPassword) {
+    throw new Error("Gmail SMTP configuration is missing");
   }
 
-  const response = await axios.post(
-    "https://api.resend.com/emails",
-    {
-      from,
-      to: [email],
-      subject: "InternArea login verification code",
-      text: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: {
+      user: smtpEmail,
+      pass: smtpPassword,
     },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    }
-  );
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
+  });
 
-  return response.data;
+  return transporter.sendMail({
+    from: `"InternArea" <${smtpEmail}>`,
+    to: email,
+    subject: "InternArea login verification code",
+    text: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 520px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
+        <h2 style="color: #2563eb;">InternArea Login Verification</h2>
+        <p>Your login verification code is:</p>
+        <h1 style="letter-spacing: 8px; color: #111827;">${otp}</h1>
+        <p>This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>
+        <p style="color: #6b7280;">Do not share this code with anyone.</p>
+      </div>
+    `,
+  });
 }
-
 // --------------------------------------------------
 // START LOGIN SECURITY
 // --------------------------------------------------
@@ -322,48 +330,59 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
     });
 
     try {
-      stage = "sending OTP through Resend";
+    stage = "sending OTP through Gmail SMTP";
 
       await sendLoginOtpEmail(email, otp);
     } catch (mailError) {
-      console.error("RESEND OTP DELIVERY FAILED:", {
+      console.error("GMAIL SMTP OTP DELIVERY FAILED:", {
         message: mailError.message,
         code: mailError.code,
-        name: mailError.name,
-        response: mailError.response?.data,
+        command: mailError.command,
+        responseCode: mailError.responseCode,
       });
 
-      stage = "cleaning failed OTP challenge";
+      // Delete the OTP because it was not successfully delivered.
+      try {
+        await LoginOtp.deleteOne({
+          _id: challenge._id,
+        });
+      } catch (cleanupError) {
+        console.error("FAILED TO CLEAN OTP CHALLENGE:", {
+          message: cleanupError.message,
+        });
+      }
 
-      await LoginOtp.deleteOne({
-        _id: challenge._id,
-      });
-
+      // Record the failed login attempt independently.
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
+      activity.verificationStatus = "FAILED";
       activity.failureReason =
-        "Email verification could not be sent.";
+        "Email verification could not be delivered.";
 
-      stage = "saving email delivery failure";
-      await activity.save();
+      try {
+        await activity.save();
+      } catch (saveError) {
+        console.error("FAILED TO SAVE EMAIL DELIVERY FAILURE:", {
+          message: saveError.message,
+          name: saveError.name,
+        });
+      }
 
-      throw mailError;
-    }
-
-    activity.eventType = "OTP_SENT";
-    activity.verificationMethod = "EMAIL_PASSWORD";
-    activity.verificationStatus = "PENDING";
-
-    stage = "saving OTP sent activity";
-    await activity.save();
-
-    return res.json({
+      // Do not throw the original email error into the outer 500 handler.
+      return res.status(502).json({
+        success: false,
+        code: "OTP_EMAIL_DELIVERY_FAILED",
+        message:
+          "Unable to send the verification email. Please try again later.",
+      });
+      }
+          return res.json({
       success: true,
       otpRequired: true,
       activityId: activity._id,
-      message:
-        "Verification code sent to your registered email.",
+      message: "Verification code sent to your registered email.",
     });
+    
   } catch (error) {
     console.error("LOGIN SECURITY START FAILED:", {
       stage,
