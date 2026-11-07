@@ -12,10 +12,9 @@ import axios from "axios";
 import { useLanguage } from "../../../context/LanguageContext";
 import { auth } from "../../firebase/firebase";
 
-const API_URL = `${
-  process.env.NEXT_PUBLIC_API_URL ||
+const API_URL = `${process.env.NEXT_PUBLIC_API_URL ||
   "https://internshala-clone-a0st.onrender.com"
-}/api/application`;
+  }/api/application`;
 
 const getStatusColor = (status?: string) => {
   switch ((status || "pending").toLowerCase()) {
@@ -72,10 +71,10 @@ const Index = () => {
       const applications = Array.isArray(res.data)
         ? res.data
         : Array.isArray(res.data?.data)
-        ? res.data.data
-        : Array.isArray(res.data?.applications)
-        ? res.data.applications
-        : [];
+          ? res.data.data
+          : Array.isArray(res.data?.applications)
+            ? res.data.applications
+            : [];
 
       setData(applications);
     } catch (err: any) {
@@ -94,7 +93,7 @@ const Index = () => {
       } else {
         setError(
           err.response?.data?.message ||
-            "Unable to load applications. Check that your backend is running."
+          "Unable to load applications. Check that your backend is running."
         );
       }
     } finally {
@@ -144,11 +143,11 @@ const Index = () => {
         prev.map((application) =>
           application._id === id
             ? {
-                ...application,
-                status:
-                  updatedApplication?.status ||
-                  action,
-              }
+              ...application,
+              status:
+                updatedApplication?.status ||
+                action,
+            }
             : application
         )
       );
@@ -161,7 +160,7 @@ const Index = () => {
 
       setError(
         err.response?.data?.message ||
-          "Unable to update application status."
+        "Unable to update application status."
       );
     } finally {
       setUpdatingId(null);
@@ -246,17 +245,16 @@ const Index = () => {
                   <button
                     key={item.value}
                     onClick={() => setFilter(item.value)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                      filter === item.value
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition ${filter === item.value
                         ? item.value === "pending"
                           ? "bg-yellow-500 text-white shadow-sm"
                           : item.value === "approved"
-                          ? "bg-green-600 text-white shadow-sm"
-                          : item.value === "rejected"
-                          ? "bg-red-600 text-white shadow-sm"
-                          : "bg-blue-600 text-white shadow-sm"
+                            ? "bg-green-600 text-white shadow-sm"
+                            : item.value === "rejected"
+                              ? "bg-red-600 text-white shadow-sm"
+                              : "bg-blue-600 text-white shadow-sm"
                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
+                      }`}
                   >
                     {item.label}
                   </button>
@@ -353,8 +351,14 @@ const Index = () => {
                         <div className="flex items-center gap-2 text-sm text-gray-600">
                           <Calendar size={16} className="text-gray-400" />
                           <span>
-                            {application.createdAt
-                              ? new Date(application.createdAt).toLocaleDateString()
+                            {application.createdAt || application.createAt
+                              ? new Date(
+                                application.createdAt || application.createAt
+                              ).toLocaleDateString("en-IN", {
+                                day: "2-digit",
+                                month: "short",
+                                year: "numeric",
+                              })
                               : "N/A"}
                           </span>
                         </div>

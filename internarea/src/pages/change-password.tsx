@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { onAuthStateChanged} from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase/firebase";
 import { toast } from "react-toastify";
 
@@ -71,8 +71,14 @@ export default function ChangePassword() {
       // Ask the backend to clear the temporary-password requirement.
       const idToken = await user.getIdToken(true);
 
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+
+      if (!apiBaseUrl) {
+        throw new Error("API URL is not configured.");
+      }
+
       const response = await fetch(
-        "http://localhost:5000/api/forgot-password/complete-change",
+        `${apiBaseUrl.replace(/\/+$/, "")}/api/forgot-password/complete-change`,
         {
           method: "POST",
           headers: {
@@ -88,7 +94,7 @@ export default function ChangePassword() {
       if (!response.ok || !result.success) {
         toast.error(
           result.message ||
-            "Password changed, but account verification could not be completed. Contact support."
+          "Password changed, but account verification could not be completed. Contact support."
         );
         return;
       }
@@ -98,15 +104,12 @@ export default function ChangePassword() {
 
       toast.success("Password changed successfully!");
 
-      setNewPassword("");
-      setConfirmPassword("");
-
       await router.replace("/");
     } catch (error: unknown) {
       const code =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 

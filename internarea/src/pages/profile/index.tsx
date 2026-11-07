@@ -24,6 +24,7 @@ import { useEffect } from "react";
 import axios from "axios";
 import React, { useState } from "react";
 import { useSelector } from "react-redux";
+import { Crown, CreditCard } from "lucide-react";
 
 const API_BASE =
   "https://internshala-clone-a0st.onrender.com/api";
@@ -60,6 +61,28 @@ const Index = () => {
 
   const currentUser = auth.currentUser;
 
+  const getSessionAuthHeaders = async () => {
+    const firebaseUser = auth.currentUser;
+
+    if (!firebaseUser) {
+      throw new Error("Please sign in again.");
+    }
+
+    const idToken = await firebaseUser.getIdToken(true);
+    const sessionToken = localStorage.getItem("internarea_login_session");
+
+    if (!sessionToken) {
+      throw new Error(
+        "Login session token is missing. Please log out and log in again."
+      );
+    }
+
+    return {
+      Authorization: `Bearer ${idToken}`,
+      "x-login-session": sessionToken,
+    };
+  };
+
   const hasPasswordProvider =
     currentUser?.providerData.some(
       (provider) => provider.providerId === "password"
@@ -69,9 +92,13 @@ const Index = () => {
     try {
       setSessionsLoading(true);
       setSessionMessage("");
+      setSessionError(false);
+
+      const headers = await getSessionAuthHeaders();
 
       const response = await axios.get(
-        `${API_BASE}/login-security/sessions`
+        `${API_BASE}/login-security/sessions`,
+        { headers }
       );
 
       setSessions(response.data.sessions || []);
@@ -82,6 +109,7 @@ const Index = () => {
       setSessionError(true);
       setSessionMessage(
         error.response?.data?.message ||
+        error.message ||
         "Unable to load active devices."
       );
     } finally {
@@ -103,7 +131,11 @@ const Index = () => {
       setSessionMessage("");
 
       await axios.post(
-        `${API_BASE}/login-security/sessions/${encodeURIComponent(sessionId)}/revoke`
+        `${API_BASE}/login-security/sessions/${encodeURIComponent(sessionId)}/revoke`,
+        {},
+        {
+          headers: await getSessionAuthHeaders(),
+        }
       );
 
       setSessions((previous) =>
@@ -137,9 +169,12 @@ const Index = () => {
       setSessionMessage("");
 
       const response = await axios.post(
-        `${API_BASE}/login-security/sessions/revoke-others`
+        `${API_BASE}/login-security/sessions/revoke-others`,
+        {},
+        {
+          headers: await getSessionAuthHeaders(),
+        }
       );
-
       setSessions((previous) =>
         previous.filter(
           (session) => session.sessionId === currentSessionId
@@ -379,8 +414,8 @@ const Index = () => {
                     <div
                       role="status"
                       className={`rounded-lg p-3 text-sm mb-4 ${sessionError
-                          ? "bg-red-50 text-red-700"
-                          : "bg-green-50 text-green-700"
+                        ? "bg-red-50 text-red-700"
+                        : "bg-green-50 text-green-700"
                         }`}
                     >
                       {sessionMessage}
@@ -623,6 +658,33 @@ const Index = () => {
                     Forgot your password?
                   </Link>
                 )}
+              </div>
+
+              {/* Subscription Management */}
+              <div className="border border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="bg-blue-100 p-3 rounded-lg">
+                    <Crown className="h-6 w-6 text-blue-600" />
+                  </div>
+
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">
+                      Internarea Membership
+                    </h2>
+                    <p className="text-sm text-gray-600">
+                      Manage your internship application limits and subscription.
+                    </p>
+                  </div>
+                </div>
+
+                <Link
+                  href="/subscription"
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700 transition-colors"
+                >
+                  <CreditCard className="h-5 w-5" />
+                  View Subscription Plans
+                  <ExternalLink className="h-4 w-4" />
+                </Link>
               </div>
 
               <div className="flex justify-center pt-2">

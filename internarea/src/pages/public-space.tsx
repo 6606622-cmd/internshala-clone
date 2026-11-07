@@ -76,32 +76,170 @@ type FriendEntry = {
   since?: string;
 };
 
+
+type UploadedVideo = {
+  type: "video";
+  url: string;
+  storageKey?: string;
+  contentHash?: string;
+};
+
+type VideoSource =
+  | { kind: "youtube"; embedUrl: string }
+  | { kind: "drive"; embedUrl: string }
+  | { kind: "direct"; url: string };
+
+function getVideoSource(url: string): VideoSource {
+  const parsed = new URL(url);
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+
+  if (
+    host === "youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "youtube-nocookie.com" ||
+    host === "youtu.be"
+  ) {
+    let videoId = "";
+
+    if (host === "youtu.be") {
+      videoId = parsed.pathname.split("/").filter(Boolean)[0] || "";
+    } else {
+      videoId =
+        parsed.searchParams.get("v") ||
+        parsed.pathname.match(/^\/(?:embed|shorts)\/([^/]+)/)?.[1] ||
+        "";
+    }
+
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      throw new Error("This YouTube video link is invalid.");
+    }
+
+    return {
+      kind: "youtube",
+      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+    };
+  }
+
+  if (host === "drive.google.com") {
+    const fileId =
+      parsed.pathname.match(/\/file\/d\/([^/]+)/)?.[1] ||
+      parsed.searchParams.get("id");
+
+    if (!fileId || !/^[a-zA-Z0-9_-]+$/.test(fileId)) {
+      throw new Error("This Google Drive video link is invalid.");
+    }
+
+    return {
+      kind: "drive",
+      embedUrl: `https://drive.google.com/file/d/${fileId}/preview`,
+    };
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("Video links must use HTTPS.");
+  }
+
+  return { kind: "direct", url: parsed.toString() };
+}
+
 async function apiRequest<T = Record<string, unknown>>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
   const user = auth.currentUser;
 
-  if (!user) throw new Error("Please sign in to InternArea first.");
+  if (!user) {
+    throw new Error("Please sign in to InternArea first.");
+  }
 
-  const token = await user.getIdToken();
+  const sessionToken = localStorage.getItem("internarea_login_session");
+
+  if (!sessionToken) {
+    throw new Error("Login session is missing. Please sign in again.");
+  }
+
+  const firebaseToken = await user.getIdToken();
+
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", `Bearer ${firebaseToken}`);
+  headers.set("x-login-session", sessionToken);
+
+  if (options.body && !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers,
-    },
+    headers,
   });
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok || data.success === false) {
-    throw new Error(data.message || "The request failed.");
+    throw new Error(data.message || `Request failed with status ${response.status}.`);
   }
 
   return data as T;
 }
+
+function PublicSpaceVideo({
+  url,
+  onFullscreen,
+}: {
+  url: string;
+  onFullscreen: (url: string, type: "youtube" | "drive" | "direct") => void;
+}) {
+  let source: VideoSource;
+
+  try {
+    source = getVideoSource(url);
+  } catch {
+    return (
+      <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">
+        This video link is not valid.
+      </p>
+    );
+  }
+
+  return (
+    <div className="relative mt-3 overflow-hidden rounded-xl bg-black">
+      {source.kind === "youtube" || source.kind === "drive" ? (
+        <iframe
+          src={source.embedUrl}
+          title="Public Space video"
+          className="aspect-video w-full"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
+        />
+      ) : (
+        <video
+          src={source.url}
+          controls
+          playsInline
+          preload="metadata"
+          className="max-h-[500px] w-full object-contain"
+        >
+          Your browser does not support video playback.
+        </video>
+      )}
+
+      <button
+        type="button"
+        onClick={() =>
+          onFullscreen(
+            source.kind === "direct" ? source.url : source.embedUrl,
+            source.kind
+          )
+        }
+        className="absolute right-3 top-3 rounded-lg bg-black/70 px-3 py-2 text-sm font-semibold text-white"
+      >
+        Fullscreen
+      </button>
+    </div>
+  );
+}
+
 
 export default function PublicSpacePage() {
   const [posts, setPosts] = useState<PublicPost[]>([]);
@@ -142,6 +280,16 @@ export default function PublicSpacePage() {
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [editPrivacy, setEditPrivacy] = useState<"public" | "friends">("public");
+
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  const [fullscreenVideo, setFullscreenVideo] = useState<{
+    url: string;
+    type: "youtube" | "drive" | "direct";
+  } | null>(null);
+
 
   const currentUid = auth.currentUser?.uid;
 
@@ -198,7 +346,7 @@ export default function PublicSpacePage() {
 
     try {
       const [friendsData, requestsData] = await Promise.all([
-        apiRequest<{ friends?: string[] }>("/public-space/friendships/friends"),
+        apiRequest<{ friends?: FriendEntry[] }>("/public-space/friendships/friends"),
         apiRequest<{ requests?: FriendshipRequest[] }>(
           "/public-space/friendships/requests/incoming"
         ),
@@ -237,29 +385,61 @@ export default function PublicSpacePage() {
     return unsubscribe;
   }, [loadPosts, loadFriendships]);
 
+
+  const uploadVideo = async (file: File): Promise<UploadedVideo> => {
+    const allowedTypes = [
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
+      "video/ogg",
+    ];
+
+    if (!allowedTypes.includes(file.type)) {
+      throw new Error("Choose an MP4, WebM, MOV or OGG video.");
+    }
+
+    if (file.size > 50 * 1024 * 1024) {
+      throw new Error("Video size must not exceed 50 MB.");
+    }
+
+    const formData = new FormData();
+    formData.append("video", file);
+
+    setUploadingVideo(true);
+    setUploadProgress(0);
+
+    try {
+      // Fetch does not provide upload progress events.
+      // This indicates that the upload is in progress, not an exact percentage.
+      setUploadProgress(50);
+
+      const result = await apiRequest<{
+        media: UploadedVideo;
+        message?: string;
+      }>("/public-space/uploads/video", {
+        method: "POST",
+        body: formData,
+      });
+
+      setUploadProgress(100);
+      return result.media;
+    } finally {
+      setUploadingVideo(false);
+    }
+  };
+
+
+
   const createPost = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (publishing) return;
+    if (publishing || uploadingVideo) return;
 
     const cleanText = text.trim();
     const cleanUrl = mediaUrl.trim();
 
-    if (!cleanText && !cleanUrl) {
-      setError("Add text, an image URL, or a video URL.");
+    if (!cleanText && !cleanUrl && !videoFile) {
+      setError("Add text, a media URL, or select a video.");
       return;
-    }
-
-    if (cleanUrl) {
-      try {
-        const parsed = new URL(cleanUrl);
-        if (parsed.protocol !== "https:") {
-          setError("Media URLs must use HTTPS.");
-          return;
-        }
-      } catch {
-        setError("Please enter a valid media URL.");
-        return;
-      }
     }
 
     setPublishing(true);
@@ -267,26 +447,54 @@ export default function PublicSpacePage() {
     setNotice("");
 
     try {
+      let media: PostMedia[] = [];
+
+      if (videoFile) {
+        const uploaded = await uploadVideo(videoFile);
+        media.push(uploaded);
+      } else if (cleanUrl) {
+        const parsed = new URL(cleanUrl);
+
+        if (parsed.protocol !== "https:") {
+          throw new Error("Media URLs must use HTTPS.");
+        }
+
+        if (mediaType === "video") {
+          getVideoSource(cleanUrl);
+        }
+
+        media.push({
+          type: mediaType,
+          url: parsed.toString(),
+        });
+      }
+
       await apiRequest("/public-space/posts", {
         method: "POST",
         body: JSON.stringify({
           text: cleanText,
-          media: cleanUrl ? [{ type: mediaType, url: cleanUrl }] : [],
+          media,
           privacy,
         }),
       });
 
       setText("");
       setMediaUrl("");
+      setVideoFile(null);
+      setMediaType("image");
       setPrivacy("public");
+
       setNotice("Your post was published successfully.");
       await loadPosts();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not publish your post.");
     } finally {
       setPublishing(false);
+      setUploadingVideo(false);
+      setUploadProgress(0);
     }
   };
+
 
   const sendFriendRequest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -346,6 +554,38 @@ export default function PublicSpacePage() {
       setRespondingId("");
     }
   };
+
+
+  const unfollowFriend = async (friend: FriendEntry) => {
+    if (!window.confirm("Are you sure you want to remove this friend?")) {
+      return;
+    }
+
+    setFriendshipError("");
+    setFriendshipNotice("");
+
+    try {
+      const data = await apiRequest<{ message?: string }>(
+        `/public-space/friendships/${encodeURIComponent(friend.friendshipId)}`,
+        { method: "DELETE" }
+      );
+
+      setFriends((prev) =>
+        prev.filter(
+          (item) =>
+            typeof item === "string" || item.friendshipId !== friend.friendshipId
+        )
+      );
+
+      setFriendshipNotice(data.message || "Friend removed successfully.");
+      await loadPosts();
+    } catch (err) {
+      setFriendshipError(
+        err instanceof Error ? err.message : "Could not remove friend."
+      );
+    }
+  };
+
 
   const runPostAction = async (postId: string, action: () => Promise<void>) => {
     if (busyActions[postId]) return;
@@ -691,25 +931,38 @@ export default function PublicSpacePage() {
               </p>
             ) : (
               <ul className="space-y-2">
+
                 {friends.map((friend) => {
                   const uid = typeof friend === "string" ? friend : friend.uid;
 
                   return (
                     <li
                       key={typeof friend === "string" ? friend : friend.friendshipId || friend.uid}
-                      className="break-all rounded-xl bg-slate-50 p-3 text-sm"
+                      className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm"
                     >
-                      <p>{uid}</p>
+                      <div className="min-w-0 break-all">
+                        <p>{uid}</p>
 
-                      {typeof friend !== "string" && friend.since && (
-                        <p className="mt-1 text-xs text-slate-500">
-                          Friends since{" "}
-                          {new Date(friend.since).toLocaleDateString()}
-                        </p>
+                        {typeof friend !== "string" && friend.since && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Friends since {new Date(friend.since).toLocaleDateString()}
+                          </p>
+                        )}
+                      </div>
+
+                      {typeof friend !== "string" && (
+                        <button
+                          type="button"
+                          onClick={() => void unfollowFriend(friend)}
+                          className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-50"
+                        >
+                          Unfollow
+                        </button>
                       )}
                     </li>
                   );
                 })}
+
               </ul>
             )}
           </div>
@@ -728,33 +981,79 @@ export default function PublicSpacePage() {
           />
           <p className="mt-1 text-right text-xs text-slate-500">{text.length}/5000 characters</p>
 
+
           <div className="mt-3 space-y-3">
             <label htmlFor="mediaUrl" className="block text-sm font-semibold">
               Image or video URL (optional)
             </label>
+
             <input
               id="mediaUrl"
               type="url"
               value={mediaUrl}
-              onChange={(event) => setMediaUrl(event.target.value)}
-              placeholder="https://example.com/photo.jpg"
+              onChange={(event) => {
+                setMediaUrl(event.target.value);
+                setVideoFile(null);
+              }}
+              placeholder="Paste an image, MP4, YouTube or Google Drive URL"
               className="w-full rounded-xl border px-4 py-3"
             />
+
             <select
               value={mediaType}
-              onChange={(event) => setMediaType(event.target.value as "image" | "video")}
+              onChange={(event) =>
+                setMediaType(event.target.value as "image" | "video")
+              }
               className="w-full rounded-xl border bg-white px-3 py-3"
             >
               <option value="image">Image</option>
               <option value="video">Video</option>
             </select>
+
+            <div className="rounded-xl border border-dashed p-4">
+              <label htmlFor="videoFile" className="block text-sm font-semibold">
+                Or upload a video from your device
+              </label>
+
+              <input
+                id="videoFile"
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime,video/ogg"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] || null;
+                  setVideoFile(file);
+                  if (file) setMediaUrl("");
+                }}
+                className="mt-2 block w-full text-sm"
+              />
+
+              {videoFile && (
+                <p className="mt-2 break-all text-sm text-green-700">
+                  Selected: {videoFile.name}
+                </p>
+              )}
+
+              <p className="mt-1 text-xs text-slate-500">
+                Maximum size: 50 MB. Supported: MP4, WebM, MOV and OGG.
+              </p>
+
+              {uploadingVideo && (
+                <p className="mt-2 text-sm font-semibold text-indigo-600">
+                  Uploading video to Cloudinary...
+                </p>
+              )}
+            </div>
+
             <label htmlFor="privacy" className="block text-sm font-semibold">
               Who can see this post?
             </label>
+
             <select
               id="privacy"
               value={privacy}
-              onChange={(event) => setPrivacy(event.target.value as "public" | "friends")}
+              onChange={(event) =>
+                setPrivacy(event.target.value as "public" | "friends")
+              }
               className="w-full rounded-xl border bg-white px-3 py-3"
             >
               <option value="public">Public</option>
@@ -762,9 +1061,14 @@ export default function PublicSpacePage() {
             </select>
           </div>
 
+
           <button
             type="submit"
-            disabled={(!text.trim() && !mediaUrl.trim()) || publishing}
+            disabled={
+              (!text.trim() && !mediaUrl.trim() && !videoFile) ||
+              publishing ||
+              uploadingVideo
+            }
             className="mt-4 w-full rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
           >
             {publishing ? "Publishing..." : "Publish post"}
@@ -831,15 +1135,24 @@ export default function PublicSpacePage() {
                   ) : (
                     <>
                       <p className="whitespace-pre-wrap break-words leading-7">{post.text}</p>
+
                       {post.media?.map((item, index) => (
                         <div key={`${post._id}-${index}`} className="mt-3">
                           {item.type === "image" ? (
-                            <img src={item.url} alt="Post attachment" className="max-h-96 w-full rounded-xl object-contain" />
+                            <img
+                              src={item.url}
+                              alt="Post attachment"
+                              className="max-h-96 w-full rounded-xl object-contain"
+                            />
                           ) : (
-                            <video src={item.url} controls className="max-h-96 w-full rounded-xl" />
+                            <PublicSpaceVideo
+                              url={item.url}
+                              onFullscreen={(url, type) => setFullscreenVideo({ url, type })}
+                            />
                           )}
                         </div>
                       ))}
+
                     </>
                   )}
 
@@ -992,6 +1305,45 @@ export default function PublicSpacePage() {
           )}
         </section>
       </div>
+
+
+      {fullscreenVideo && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4"
+          onClick={() => setFullscreenVideo(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setFullscreenVideo(null)}
+            className="absolute right-5 top-5 z-10 rounded-lg bg-white/20 px-4 py-2 font-semibold text-white"
+          >
+            Close ✕
+          </button>
+
+          <div
+            className="w-full max-w-6xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {fullscreenVideo.type === "direct" ? (
+              <video
+                src={fullscreenVideo.url}
+                controls
+                autoPlay
+                playsInline
+                className="max-h-[85vh] w-full bg-black object-contain"
+              />
+            ) : (
+              <iframe
+                src={fullscreenVideo.url}
+                title="Fullscreen video"
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+                className="aspect-video w-full"
+              />
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

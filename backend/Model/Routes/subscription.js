@@ -183,8 +183,13 @@ router.get("/me", async (req, res) => {
 // CREATE RAZORPAY ORDER
 router.post("/create-order", async (req, res) => {
     try {
-     // TEMPORARY TESTING: Allow subscription purchases 24/7.
-// Original payment time restriction will be restored after testing.
+  if (!isPaymentWindowOpen()) {
+    return res.status(403).json({
+        success: false,
+        message:
+            "Subscription purchases are available only between 5:00 AM and 11:45 AM IST. Please try again during this time.",
+    });
+}
         const { plan } = req.body || {};
 
         if (!Object.prototype.hasOwnProperty.call(PLANS, plan)) {

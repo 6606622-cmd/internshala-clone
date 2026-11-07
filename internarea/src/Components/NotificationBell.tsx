@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { auth } from "../firebase/firebase";
 
 const API_BASE = "https://internshala-clone-a0st.onrender.com/api";
+const LOGIN_SESSION_KEY = "internarea_login_session";
 
 type NotificationItem = {
   _id: string;
@@ -32,15 +33,32 @@ async function apiRequest<T>(
     throw new Error("Please sign in to view notifications.");
   }
 
-  const token = await user.getIdToken();
+  const [firebaseToken, sessionToken] = await Promise.all([
+    user.getIdToken(),
+    Promise.resolve(
+      typeof window !== "undefined"
+        ? localStorage.getItem(LOGIN_SESSION_KEY)
+        : null
+    ),
+  ]);
 
-  const response = await fetch(`${API_BASE}/public-space/notifications${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  });
+  if (!sessionToken) {
+    throw new Error(
+      "Your login session is missing. Please sign out and sign in again."
+    );
+  }
+
+  const response = await fetch(
+    `${API_BASE}/public-space/notifications${path}`,
+    {
+      method,
+      headers: {
+        Authorization: `Bearer ${firebaseToken}`,
+        "x-login-session": sessionToken,
+        "Content-Type": "application/json",
+      },
+    }
+  );
 
   const data = await response.json().catch(() => ({}));
 
@@ -127,7 +145,6 @@ export default function NotificationBell() {
   }, [open, loadNotifications]);
 
   useEffect(() => {
-
     const unsubscribe = auth.onAuthStateChanged((user) => {
       if (user) {
         void loadNotifications();

@@ -51,9 +51,15 @@ async function startLoginSecurity(user: any) {
     throw new Error(data.message || "Login verification failed.");
   }
 
-  if (!data.otpRequired && data.sessionToken) {
-    saveLoginSession(data.sessionToken);
+ if (!data.otpRequired) {
+  if (!data.sessionToken) {
+    throw new Error(
+      "Backend did not create a login session. Please try again."
+    );
   }
+
+  saveLoginSession(data.sessionToken);
+}
 
   return data;
 }
@@ -501,25 +507,48 @@ const Navbar = () => {
 
 
   // Logout.
-  const handleLogout = async () => {
-    if (authLoading) return;
+ const handleLogout = async () => {
+  if (authLoading) return;
 
-    try {
-      setAuthLoading(true);
+  try {
+    setAuthLoading(true);
 
-      clearLoginSession();
-      await signOut(auth);
+    const user = auth.currentUser;
+    const sessionToken = getLoginSession();
 
-      toast.success(t.logoutSuccess);
+    // Revoke the backend session before clearing its token.
+    if (user && sessionToken) {
+      try {
+        const firebaseToken = await user.getIdToken();
 
-      await router.push("/");
-    } catch (error) {
-      console.error("Logout error:", error);
-      toast.error(t.logoutFailed);
-    } finally {
-      setAuthLoading(false);
+        await fetch(
+          "https://internshala-clone-a0st.onrender.com/api/login-security/logout",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${firebaseToken}`,
+              "x-login-session": sessionToken,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } catch (sessionError) {
+        console.error("Backend session logout failed:", sessionError);
+      }
     }
-  };
+
+    clearLoginSession();
+    await signOut(auth);
+
+    toast.success(t.logoutSuccess);
+    await router.push("/");
+  } catch (error) {
+    console.error("Logout error:", error);
+    toast.error(t.logoutFailed);
+  } finally {
+    setAuthLoading(false);
+  }
+};
 
   // Change language safely.
   const handleLanguageChange = async (
@@ -1195,7 +1224,10 @@ const Navbar = () => {
             </button>
           </div>
 
-          {showLoginOtp && (
+        
+        </div>
+      )}
+        {showLoginOtp && (
             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4">
               <div className="w-full max-w-md rounded-2xl bg-white p-7 shadow-2xl">
                 <h2 className="text-2xl font-bold text-gray-900">
@@ -1255,8 +1287,6 @@ const Navbar = () => {
               </div>
             </div>
           )}
-        </div>
-      )}
     </div>
   );
 };
