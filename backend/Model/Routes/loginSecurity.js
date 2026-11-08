@@ -1,8 +1,8 @@
 
 const express = require("express");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
 const UAParser = require("ua-parser-js");
+const axios = require("axios");
 
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
@@ -163,47 +163,53 @@ async function createLoginSession({
     sessionId: session.sessionId,
     sessionToken,
   };
-}
-// --------------------------------------------------
-// GMAIL SMTP LOGIN OTP EMAIL
+}// --------------------------------------------------
+// BREVO LOGIN OTP EMAIL
 // --------------------------------------------------
 
 async function sendLoginOtpEmail(email, otp) {
-  const smtpEmail = process.env.SMTP_EMAIL;
-  const smtpPassword = process.env.SMTP_APP_PASSWORD;
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
 
-  if (!smtpEmail || !smtpPassword) {
-    throw new Error("Gmail SMTP configuration is missing");
+  if (!apiKey || !senderEmail) {
+    throw new Error("Brevo email configuration is missing");
   }
 
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: {
-      user: smtpEmail,
-      pass: smtpPassword,
+  const response = await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender: {
+        name: "InternArea",
+        email: senderEmail,
+      },
+      to: [
+        {
+          email: email,
+        },
+      ],
+      subject: "InternArea Login Verification Code",
+      textContent: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
+      htmlContent: `
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
+          <h2 style="color: #2563eb;">InternArea Login Verification</h2>
+          <p>Your login verification code is:</p>
+          <h1 style="letter-spacing: 8px; color: #111827;">${otp}</h1>
+          <p>This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>
+          <p style="color: #6b7280;">Do not share this code with anyone.</p>
+        </div>
+      `,
     },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  });
+    {
+      headers: {
+        "api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      timeout: 15000,
+    }
+  );
 
-  return transporter.sendMail({
-    from: `"InternArea" <${smtpEmail}>`,
-    to: email,
-    subject: "InternArea login verification code",
-    text: `Your InternArea login verification code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code with anyone.`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 520px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
-        <h2 style="color: #2563eb;">InternArea Login Verification</h2>
-        <p>Your login verification code is:</p>
-        <h1 style="letter-spacing: 8px; color: #111827;">${otp}</h1>
-        <p>This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>
-        <p style="color: #6b7280;">Do not share this code with anyone.</p>
-      </div>
-    `,
-  });
+  return response.data;
 }
 // --------------------------------------------------
 // START LOGIN SECURITY
@@ -328,20 +334,18 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
         Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000
       ),
     });
-
     try {
-    stage = "sending OTP through Gmail SMTP";
+      stage = "sending OTP through Brevo API";
 
       await sendLoginOtpEmail(email, otp);
     } catch (mailError) {
-      console.error("GMAIL SMTP OTP DELIVERY FAILED:", {
+      console.error("BREVO OTP DELIVERY FAILED:", {
         message: mailError.message,
         code: mailError.code,
-        command: mailError.command,
-        responseCode: mailError.responseCode,
+        response: mailError.response?.data,
+        status: mailError.response?.status,
       });
 
-      // Delete the OTP because it was not successfully delivered.
       try {
         await LoginOtp.deleteOne({
           _id: challenge._id,
@@ -352,7 +356,6 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
         });
       }
 
-      // Record the failed login attempt independently.
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
       activity.verificationStatus = "FAILED";
@@ -368,21 +371,21 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
         });
       }
 
-      // Do not throw the original email error into the outer 500 handler.
       return res.status(502).json({
         success: false,
         code: "OTP_EMAIL_DELIVERY_FAILED",
         message:
           "Unable to send the verification email. Please try again later.",
       });
-      }
-          return res.json({
+    }
+
+    return res.json({
       success: true,
       otpRequired: true,
       activityId: activity._id,
       message: "Verification code sent to your registered email.",
     });
-    
+
   } catch (error) {
     console.error("LOGIN SECURITY START FAILED:", {
       stage,
