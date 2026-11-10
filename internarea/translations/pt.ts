@@ -124,6 +124,7 @@ activelyHiring: "Contratando ativamente",
 postedOn: "Publicado em",
 writeCoverLetter: "Por favor, escreva uma carta de apresentação",
 selectAvailability: "Por favor, selecione sua disponibilidade",
+publicSpace: "Espaço público",
 };
 
 export default pt;

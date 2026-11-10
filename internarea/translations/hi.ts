@@ -123,6 +123,7 @@ activelyHiring: "सक्रिय रूप से भर्ती",
 postedOn: "पोस्ट किया गया",
 writeCoverLetter: "कृपया कवर लेटर लिखें",
 selectAvailability: "कृपया अपनी उपलब्धता चुनें",
+publicSpace: "सार्वजनिक स्थान",
 };
 
 export default hi;

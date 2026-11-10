@@ -48,11 +48,17 @@ const emailTranslations = {
   },
 };
 
+const SMTP_USER = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+const SMTP_PASS =
+  process.env.SMTP_PASS || process.env.SMTP_APP_PASSWORD;
+
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: Number(process.env.SMTP_PORT) === 465,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: SMTP_USER,
+    pass: SMTP_PASS,
   },
 });
 
@@ -284,14 +290,12 @@ router.post("/request-french-otp", verifyUser, async (req, res) => {
       });
     }
 
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.error("EMAIL_USER or EMAIL_PASS is not configured");
-
-      return res.status(500).json({
-        success: false,
-        message: "Email service is not configured",
-      });
-    }
+   if (!SMTP_USER || !SMTP_PASS || !process.env.SMTP_HOST) {
+  return res.status(500).json({
+    success: false,
+    message: "Email service is not configured",
+  });
+}
 
     const otp = crypto.randomInt(100000, 1000000).toString();
 
@@ -343,7 +347,7 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
   const uid = req.user.uid;
 
   try {
-    const { otp, page } = req.body || {};
+    const { otp } = req.body || {};
 
     if (typeof otp !== "string" || !/^\d{6}$/.test(otp)) {
       return res.status(400).json({
@@ -367,18 +371,6 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "OTP has expired. Please request a new OTP",
-      });
-    }
-
-    // Require the same page used when requesting the OTP.
-    if (
-      typeof page !== "string" ||
-      !page.trim() ||
-      page.trim() !== stored.page
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP verification page mismatch",
       });
     }
 
@@ -410,15 +402,13 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
       });
     }
 
-    await saveLanguagePreference(req, "fr", stored.page);
-
+await saveLanguagePreference(req, "fr");
     otpStore.delete(uid);
 
     return res.json({
       success: true,
       verified: true,
       language: "fr",
-      page: stored.page,
       message: "French language verified successfully",
     });
   } catch (error) {

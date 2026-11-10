@@ -122,6 +122,7 @@ activelyHiring: "正在积极招聘",
 postedOn: "发布于",
 writeCoverLetter: "请输入求职信",
 selectAvailability: "请选择您的可用时间",
+publicSpace: "公共空间",
 
 };
 

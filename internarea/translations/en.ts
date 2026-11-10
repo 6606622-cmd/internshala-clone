@@ -135,7 +135,7 @@ const en = {
   postedOn: "Posted on",
   writeCoverLetter: "Please write a cover letter",
   selectAvailability: "Please select your availability",
-  
+  publicSpace: "Public Space",
 };
 
 export default en;

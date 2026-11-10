@@ -128,6 +128,7 @@ activelyHiring: "Recrutement actif",
 postedOn: "Publié le",
 writeCoverLetter: "Veuillez rédiger une lettre de motivation",
 selectAvailability: "Veuillez sélectionner votre disponibilité",
+publicSpace: "Espace public",
 };
 
 export default fr;

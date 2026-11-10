@@ -66,6 +66,12 @@ const userLanguageSchema = new mongoose.Schema(
       type: [languageHistorySchema],
       default: [],
     },
+    frenchOtp: {
+      otpHash: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
+      lastRequestedAt: { type: Date, default: null },
+      attempts: { type: Number, default: 0 },
+    },
   },
   {
     timestamps: true,

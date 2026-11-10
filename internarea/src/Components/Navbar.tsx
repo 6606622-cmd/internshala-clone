@@ -51,15 +51,15 @@ async function startLoginSecurity(user: any) {
     throw new Error(data.message || "Login verification failed.");
   }
 
- if (!data.otpRequired) {
-  if (!data.sessionToken) {
-    throw new Error(
-      "Backend did not create a login session. Please try again."
-    );
-  }
+  if (!data.otpRequired) {
+    if (!data.sessionToken) {
+      throw new Error(
+        "Backend did not create a login session. Please try again."
+      );
+    }
 
-  saveLoginSession(data.sessionToken);
-}
+    saveLoginSession(data.sessionToken);
+  }
 
   return data;
 }
@@ -507,48 +507,48 @@ const Navbar = () => {
 
 
   // Logout.
- const handleLogout = async () => {
-  if (authLoading) return;
+  const handleLogout = async () => {
+    if (authLoading) return;
 
-  try {
-    setAuthLoading(true);
+    try {
+      setAuthLoading(true);
 
-    const user = auth.currentUser;
-    const sessionToken = getLoginSession();
+      const user = auth.currentUser;
+      const sessionToken = getLoginSession();
 
-    // Revoke the backend session before clearing its token.
-    if (user && sessionToken) {
-      try {
-        const firebaseToken = await user.getIdToken();
+      // Revoke the backend session before clearing its token.
+      if (user && sessionToken) {
+        try {
+          const firebaseToken = await user.getIdToken();
 
-        await fetch(
-          "https://internshala-clone-a0st.onrender.com/api/login-security/logout",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${firebaseToken}`,
-              "x-login-session": sessionToken,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-      } catch (sessionError) {
-        console.error("Backend session logout failed:", sessionError);
+          await fetch(
+            "https://internshala-clone-a0st.onrender.com/api/login-security/logout",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${firebaseToken}`,
+                "x-login-session": sessionToken,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+        } catch (sessionError) {
+          console.error("Backend session logout failed:", sessionError);
+        }
       }
+
+      clearLoginSession();
+      await signOut(auth);
+
+      toast.success(t.logoutSuccess);
+      await router.push("/");
+    } catch (error) {
+      console.error("Logout error:", error);
+      toast.error(t.logoutFailed);
+    } finally {
+      setAuthLoading(false);
     }
-
-    clearLoginSession();
-    await signOut(auth);
-
-    toast.success(t.logoutSuccess);
-    await router.push("/");
-  } catch (error) {
-    console.error("Logout error:", error);
-    toast.error(t.logoutFailed);
-  } finally {
-    setAuthLoading(false);
-  }
-};
+  };
 
   // Change language safely.
   const handleLanguageChange = async (
@@ -787,7 +787,7 @@ const Navbar = () => {
                 className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white transition hover:bg-indigo-700"
               >
                 <Users size={18} />
-                Public Space
+                {t.publicSpace}
               </Link>
               {/* Search */}
               <div className="relative">
@@ -963,11 +963,11 @@ const Navbar = () => {
             <div className="flex items-center gap-3 md:hidden">
               <Link
                 href="/public-space"
-                aria-label="Open Public Space"
+                aria-label={t.publicSpace}
                 className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white"
               >
                 <Users size={18} />
-                <span>Public Space</span>
+                <span>{t.publicSpace}</span>
               </Link>
 
               <button
@@ -1224,69 +1224,69 @@ const Navbar = () => {
             </button>
           </div>
 
-        
+
         </div>
       )}
-        {showLoginOtp && (
-            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4">
-              <div className="w-full max-w-md rounded-2xl bg-white p-7 shadow-2xl">
-                <h2 className="text-2xl font-bold text-gray-900">
-                  Verify your login
-                </h2>
+      {showLoginOtp && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-7 shadow-2xl">
+            <h2 className="text-2xl font-bold text-gray-900">
+              Verify your login
+            </h2>
 
-                <p className="mt-3 text-sm text-gray-600">
-                  Enter the six-digit verification code sent to your registered email.
-                </p>
+            <p className="mt-3 text-sm text-gray-600">
+              Enter the six-digit verification code sent to your registered email.
+            </p>
 
-                <form onSubmit={handleLoginOtpVerification} className="mt-6 space-y-4">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    required
-                    value={loginOtp}
-                    onChange={(event) =>
-                      setLoginOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
+            <form onSubmit={handleLoginOtpVerification} className="mt-6 space-y-4">
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                required
+                value={loginOtp}
+                onChange={(event) =>
+                  setLoginOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                placeholder="Enter 6-digit OTP"
+                className="w-full rounded-lg border border-gray-300 px-4 py-3 text-center text-xl tracking-[0.4em] text-gray-900"
+              />
+
+              <button
+                type="submit"
+                disabled={loginOtpLoading || loginOtp.length !== 6}
+                className="w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loginOtpLoading ? "Verifying..." : "Verify and Continue"}
+              </button>
+
+              <button
+                type="button"
+                disabled={loginOtpLoading}
+                onClick={async () => {
+                  try {
+                    if (auth.currentUser) {
+                      await signOut(auth);
                     }
-                    placeholder="Enter 6-digit OTP"
-                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-center text-xl tracking-[0.4em] text-gray-900"
-                  />
 
-                  <button
-                    type="submit"
-                    disabled={loginOtpLoading || loginOtp.length !== 6}
-                    className="w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
-                  >
-                    {loginOtpLoading ? "Verifying..." : "Verify and Continue"}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={loginOtpLoading}
-                    onClick={async () => {
-                      try {
-                        if (auth.currentUser) {
-                          await signOut(auth);
-                        }
-
-                        clearLoginSession();
-                        setShowLoginOtp(false);
-                        setLoginOtp("");
-                        setLoginActivityId("");
-                        toast.info("Please log in again.");
-                      } catch {
-                        toast.error("Unable to cancel login.");
-                      }
-                    }}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-700"
-                  >
-                    Cancel login
-                  </button>
-                </form>
-              </div>
-            </div>
-          )}
+                    clearLoginSession();
+                    setShowLoginOtp(false);
+                    setLoginOtp("");
+                    setLoginActivityId("");
+                    toast.info("Please log in again.");
+                  } catch {
+                    toast.error("Unable to cancel login.");
+                  }
+                }}
+                className="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-700"
+              >
+                Cancel login
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
