@@ -1,5 +1,4 @@
 const express = require("express");
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const { getAuth } = require("firebase-admin/auth");
 const adminApp = require("../../firebaseAdmin");
@@ -48,22 +47,6 @@ const emailTranslations = {
   },
 };
 
-const SMTP_USER = process.env.SMTP_USER || process.env.SMTP_EMAIL;
-const SMTP_PASS =
-  process.env.SMTP_PASS || process.env.SMTP_APP_PASSWORD;
-
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 20000,
-  greetingTimeout: 20000,
-  socketTimeout: 30000,
-});
 
 // ---------------- AUTHENTICATION ----------------
 
@@ -265,6 +248,7 @@ router.post("/request-french-otp", verifyUser, async (req, res) => {
 
   try {
     const email = req.user.email;
+
     const page =
       typeof req.body?.page === "string" && req.body.page.trim()
         ? req.body.page.trim()
@@ -277,6 +261,7 @@ router.post("/request-french-otp", verifyUser, async (req, res) => {
       });
     }
 
+    // Check resend cooldown
     const lastRequestedAt = otpRequestStore.get(uid);
 
     if (
@@ -293,53 +278,113 @@ router.post("/request-french-otp", verifyUser, async (req, res) => {
       });
     }
 
-   if (!SMTP_USER || !SMTP_PASS || !process.env.SMTP_HOST) {
-  return res.status(500).json({
-    success: false,
-    message: "Email service is not configured",
-  });
-}
+    // Check Brevo configuration
+    const apiKey = process.env.BREVO_API_KEY;
+    const senderEmail =
+      process.env.SMTP_FROM ||
+      process.env.SMTP_EMAIL ||
+      process.env.SMTP_USER;
 
+    if (!apiKey || !senderEmail) {
+      console.error("Brevo email configuration is missing");
+
+      return res.status(500).json({
+        success: false,
+        message: "Email service is not configured",
+      });
+    }
+
+    // Generate six-digit OTP
     const otp = crypto.randomInt(100000, 1000000).toString();
 
     const userLanguage = await UserLanguage.findOne({
       firebaseUid: uid,
     });
 
-    const emailLanguage = userLanguage?.preferredLanguage || "en";
+    const emailLanguage =
+      userLanguage?.preferredLanguage || "en";
+
     const emailText =
       emailTranslations[emailLanguage] || emailTranslations.en;
 
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: emailText.subject,
-      text: emailText.message(otp),
-    });
+    // Send email using Brevo HTTPS API
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
-    // Start the cooldown only after successful email delivery.
-    otpRequestStore.set(uid, Date.now());
+    let emailResponse;
+
+    try {
+      emailResponse = await fetch(
+        "https://api.brevo.com/v3/smtp/email",
+        {
+          method: "POST",
+          headers: {
+            "accept": "application/json",
+            "api-key": apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            sender: {
+              name: "Internarea",
+              email: senderEmail,
+            },
+            to: [
+              {
+                email,
+              },
+            ],
+            subject: emailText.subject,
+            textContent: emailText.message(otp),
+          }),
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!emailResponse.ok) {
+      const errorDetails = await emailResponse.text();
+
+      console.error(
+        "Brevo email error:",
+        emailResponse.status,
+        errorDetails
+      );
+
+      return res.status(502).json({
+        success: false,
+        message: "Unable to send OTP email. Please try again later.",
+      });
+    }
+
+    // Store OTP only after Brevo accepts the email
+    const now = Date.now();
 
     otpStore.set(uid, {
       otp,
       page,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + OTP_EXPIRY_MS,
+      createdAt: now,
+      expiresAt: now + OTP_EXPIRY_MS,
       attempts: 0,
     });
+
+    otpRequestStore.set(uid, now);
 
     return res.json({
       success: true,
       message: "OTP sent successfully",
     });
+
   } catch (error) {
     console.error("OTP email error:", error.message);
 
-    otpStore.delete(uid);
-
     return res.status(500).json({
       success: false,
-      message: "Failed to send OTP. Please try again later.",
+      message:
+        error.name === "AbortError"
+          ? "Email service timed out. Please try again."
+          : "Failed to send OTP. Please try again later.",
     });
   }
 });
@@ -350,7 +395,7 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
   const uid = req.user.uid;
 
   try {
-    const { otp } = req.body || {};
+    const { otp, page } = req.body || {};
 
     if (typeof otp !== "string" || !/^\d{6}$/.test(otp)) {
       return res.status(400).json({
@@ -374,6 +419,18 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "OTP has expired. Please request a new OTP",
+      });
+    }
+
+    // Require the same page used when requesting the OTP.
+    if (
+      typeof page !== "string" ||
+      !page.trim() ||
+      page.trim() !== stored.page
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "OTP verification page mismatch",
       });
     }
 
@@ -405,13 +462,15 @@ router.post("/verify-french-otp", verifyUser, async (req, res) => {
       });
     }
 
-await saveLanguagePreference(req, "fr");
+    await saveLanguagePreference(req, "fr", stored.page);
+
     otpStore.delete(uid);
 
     return res.json({
       success: true,
       verified: true,
       language: "fr",
+      page: stored.page,
       message: "French language verified successfully",
     });
   } catch (error) {
