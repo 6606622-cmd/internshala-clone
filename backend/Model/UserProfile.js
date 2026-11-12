@@ -7,7 +7,6 @@ const userProfileSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     username: {
       type: String,
@@ -31,9 +30,6 @@ const userProfileSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
-userProfileSchema.index({ username: 1 }, { unique: true });
-
 module.exports =
   mongoose.models.UserProfile ||
   mongoose.model("UserProfile", userProfileSchema);
