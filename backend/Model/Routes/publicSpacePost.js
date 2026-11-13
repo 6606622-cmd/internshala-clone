@@ -299,6 +299,81 @@ router.post("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => 
   }
 });
 
+// Search public posts by hashtag.
+router.get(
+  "/hashtag/:tag",
+  requireFirebaseAuth,
+  requireVerifiedLogin,
+  async (req, res) => {
+    try {
+      const tag = String(req.params.tag || "")
+        .replace(/^#/, "")
+        .trim()
+        .toLowerCase();
+
+      if (!/^[\p{L}\p{N}_]{1,50}$/u.test(tag)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid hashtag.",
+        });
+      }
+
+      const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      const posts = await Post.find({
+        privacy: "public",
+        isDeleted: false,
+        $or: [
+          { hashtags: tag },
+          {
+            text: {
+              $regex: `#${escapedTag}(?![\\p{L}\\p{N}_])`,
+              $options: "i",
+            },
+          },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean();
+
+      const profileCache = new Map();
+
+      const postsWithProfiles = await Promise.all(
+        posts.map(async (post) => {
+          if (!profileCache.has(post.authorUid)) {
+            profileCache.set(
+              post.authorUid,
+              getAuthorProfile(post.authorUid)
+            );
+          }
+
+          const authorProfile = await profileCache.get(post.authorUid);
+
+          return {
+            ...post,
+            authorProfile,
+          };
+        })
+      );
+
+      return res.json({
+        success: true,
+        hashtag: `#${tag}`,
+        count: postsWithProfiles.length,
+        posts: postsWithProfiles,
+      });
+    } catch (error) {
+      console.error("Hashtag search error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Could not search hashtag posts.",
+      });
+    }
+  }
+);
+
 // View recent public posts.
 router.get("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => {
   try {
