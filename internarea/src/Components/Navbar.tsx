@@ -35,6 +35,8 @@ function clearLoginSession() {
 }
 
 async function startLoginSecurity(user: any) {
+  clearLoginSession();
+
   const idToken = await user.getIdToken(true);
 
   const response = await fetch(`${API_BASE}/login-security/start`, {
@@ -94,6 +96,33 @@ async function verifyLoginSecurity(
 
   return data;
 }
+async function ensureUserProfile(user: any) {
+  const idToken = await user.getIdToken(true);
+  const sessionToken = getLoginSession();
+
+  if (!sessionToken) {
+    throw new Error("Login session is missing.");
+  }
+
+  const response = await fetch(`${API_BASE}/user-profile/me`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "x-login-session": sessionToken,
+    },
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    throw new Error(
+      data.message || "Unable to load your user profile."
+    );
+  }
+
+  // A new user must choose a username.
+  return data;
+}
 
 type AuthMode = "login" | "signup";
 
@@ -117,6 +146,13 @@ const Navbar = () => {
   const [loginActivityId, setLoginActivityId] = useState("");
   const [showLoginOtp, setShowLoginOtp] = useState(false);
   const [loginOtpLoading, setLoginOtpLoading] = useState(false);
+  const [showUsernameSetup, setShowUsernameSetup] = useState(false);
+  const [usernameMode, setUsernameMode] = useState<"custom" | "generate">("custom");
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameChecking, setUsernameChecking] = useState(false);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
+  const [usernameSubmitting, setUsernameSubmitting] = useState(false);
+  const [usernameError, setUsernameError] = useState("");
 
   const checkMustChangePassword = async (
     firebaseUser: import("firebase/auth").User
@@ -125,6 +161,150 @@ const Navbar = () => {
     return tokenResult.claims.mustChangePassword === true;
   };
 
+
+
+  const continueAfterProfileCheck = async (firebaseUser: any) => {
+    const result = await ensureUserProfile(firebaseUser);
+
+    if (result.needsUsername || !result.profile) {
+      // Close the login modal before showing username setup.
+      setShowLoginModal(false);
+
+      setNewUsername("");
+      setUsernameMode("custom");
+      setUsernameAvailable(null);
+      setUsernameError("");
+      setShowUsernameSetup(true);
+
+      return false;
+    }
+
+    return true;
+  };
+
+
+  const checkUsernameAvailability = async () => {
+    const username = newUsername.trim().replace(/^@/, "").toLowerCase();
+
+    if (!/^[a-z0-9_]{3,30}$/.test(username)) {
+      setUsernameAvailable(false);
+      setUsernameError(
+        "Use 3–30 lowercase letters, numbers or underscores."
+      );
+      return;
+    }
+
+    try {
+      setUsernameChecking(true);
+      setUsernameError("");
+
+      const firebaseUser = auth.currentUser;
+      const sessionToken = getLoginSession();
+
+      if (!firebaseUser || !sessionToken) {
+        throw new Error("Your login session has expired.");
+      }
+
+      const idToken = await firebaseUser.getIdToken(true);
+
+      const response = await fetch(
+        `${API_BASE}/user-profile/check-username?username=${encodeURIComponent(username)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            "x-login-session": sessionToken,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Could not check username.");
+      }
+
+      setUsernameAvailable(data.available);
+
+      if (!data.available) {
+        setUsernameError("This username is already taken. Try another.");
+      }
+    } catch (error: any) {
+      setUsernameAvailable(null);
+      setUsernameError(error.message || "Could not check username.");
+    } finally {
+      setUsernameChecking(false);
+    }
+  };
+
+  const submitUsernameSetup = async () => {
+    if (usernameSubmitting) return;
+
+    const username = newUsername.trim().replace(/^@/, "").toLowerCase();
+
+    if (usernameMode === "custom") {
+      if (!/^[a-z0-9_]{3,30}$/.test(username)) {
+        setUsernameError(
+          "Use 3–30 lowercase letters, numbers or underscores."
+        );
+        return;
+      }
+
+      if (usernameAvailable !== true) {
+        setUsernameError("Please check that your username is available first.");
+        return;
+      }
+    }
+
+    try {
+      setUsernameSubmitting(true);
+      setUsernameError("");
+
+      const firebaseUser = auth.currentUser;
+      const sessionToken = getLoginSession();
+
+      if (!firebaseUser || !sessionToken) {
+        throw new Error("Your login session has expired. Please log in again.");
+      }
+
+      const idToken = await firebaseUser.getIdToken(true);
+
+      const response = await fetch(`${API_BASE}/user-profile/setup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+          "x-login-session": sessionToken,
+        },
+        body: JSON.stringify(
+          usernameMode === "custom"
+            ? { mode: "custom", username }
+            : { mode: "generate" }
+        ),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success || !data.profile) {
+        throw new Error(data.message || "Could not save your username.");
+      }
+
+      setShowUsernameSetup(false);
+      setShowLoginOtp(false);
+      setShowLoginModal(false);
+
+      setLoginOtp("");
+      setLoginActivityId("");
+
+      toast.success(`Welcome to Internarea, @${data.profile.username}!`);
+
+      window.location.reload();
+    } catch (error: any) {
+      console.error("Username setup error:", error);
+      setUsernameError(error.message || "Could not save your username.");
+    } finally {
+      setUsernameSubmitting(false);
+    }
+  };
   const internshipAPI =
     "https://internshala-clone-a0st.onrender.com/api/internship";
 
@@ -147,7 +327,6 @@ const Navbar = () => {
     setShowPassword(false);
     setAuthMode("login");
   };
-
   const handleLoginOtpVerification = async (
     event: React.FormEvent<HTMLFormElement>
   ) => {
@@ -161,24 +340,50 @@ const Navbar = () => {
       const currentUser = auth.currentUser;
 
       if (!currentUser || !loginActivityId) {
-        throw new Error("Login verification session expired. Please log in again.");
+        throw new Error(
+          "Login verification session expired. Please log in again."
+        );
       }
 
+      // Verify the login OTP and create the backend session.
       await verifyLoginSecurity(
         currentUser,
         loginActivityId,
         loginOtp
       );
 
+      // Check whether the user must change their password.
+      const mustChangePassword =
+        await checkMustChangePassword(currentUser);
+
+      if (mustChangePassword) {
+        setShowLoginOtp(false);
+        setLoginOtp("");
+        setLoginActivityId("");
+        setShowLoginModal(false);
+
+        toast.info("Please change your password to continue.");
+        await router.push("/change-password");
+        return;
+      }
+
+      // Create or retrieve the user's MongoDB profile.
+      const profileReady = await continueAfterProfileCheck(currentUser);
+
       setShowLoginOtp(false);
       setLoginOtp("");
       setLoginActivityId("");
-      setShowLoginModal(false);
 
+      if (!profileReady) {
+        return;
+      }
+
+      setShowLoginModal(false);
       toast.success("Login verified successfully!");
 
       window.location.reload();
     } catch (error: any) {
+      console.error("Login OTP verification error:", error);
       toast.error(error.message || "OTP verification failed.");
     } finally {
       setLoginOtpLoading(false);
@@ -210,6 +415,11 @@ const Navbar = () => {
         await router.push("/change-password");
         return;
       }
+
+      // Create or retrieve the user's profile.
+      const profileReady = await continueAfterProfileCheck(credential.user);
+
+      if (!profileReady) return;
 
       toast.success(t.loginSuccess);
     } catch (error: unknown) {
@@ -257,6 +467,17 @@ const Navbar = () => {
         loginPassword
       );
 
+      // Check email verification before creating a backend login session.
+      if (!credential.user.emailVerified) {
+        await signOut(auth);
+        clearLoginSession();
+
+        toast.error(
+          "Please verify your email before logging in. Check your inbox for the verification link."
+        );
+        return;
+      }
+
       const securityResult = await startLoginSecurity(credential.user);
 
       if (securityResult.otpRequired) {
@@ -264,15 +485,6 @@ const Navbar = () => {
         setShowLoginOtp(true);
         return;
       }
-
-      if (!credential.user.emailVerified) {
-        await signOut(auth);
-        toast.error(
-          "Please verify your email before logging in. Check your inbox for the verification link."
-        );
-        return;
-      }
-
       const mustChangePassword = await checkMustChangePassword(
         credential.user
       );
@@ -283,6 +495,11 @@ const Navbar = () => {
         await router.push("/change-password");
         return;
       }
+
+      // Create or retrieve the user's profile.
+      const profileReady = await continueAfterProfileCheck(credential.user);
+
+      if (!profileReady) return;
 
       toast.success("Login successful!");
 
@@ -325,19 +542,17 @@ const Navbar = () => {
 
 
   // Resend the verification email for an existing account.
+
+  // Resend the verification email for an existing account.
   const handleResendVerification = async () => {
     if (authLoading) return;
 
     const email = loginEmail.trim();
 
     if (!email || !loginPassword) {
-      toast.error(
-        "Enter your registered email and password first."
-      );
+      toast.error("Enter your registered email and password first.");
       return;
     }
-
-    let signedIn = false;
 
     try {
       setAuthLoading(true);
@@ -348,20 +563,8 @@ const Navbar = () => {
         loginPassword
       );
 
-      const securityResult = await startLoginSecurity(credential.user);
-
-      if (securityResult.otpRequired) {
-        setLoginActivityId(securityResult.activityId);
-        setShowLoginOtp(true);
-        return;
-      }
-
-      signedIn = true;
-
       if (credential.user.emailVerified) {
-        toast.info(
-          "Your email is already verified. You can log in."
-        );
+        toast.info("Your email is already verified. You can log in.");
         return;
       }
 
@@ -385,35 +588,30 @@ const Navbar = () => {
         code === "auth/wrong-password" ||
         code === "auth/user-not-found"
       ) {
-        toast.error(
-          "Email or password is incorrect. Check your details."
-        );
+        toast.error("Email or password is incorrect. Check your details.");
       } else if (code === "auth/invalid-email") {
         toast.error("Please enter a valid email address.");
       } else if (code === "auth/too-many-requests") {
-        toast.error(
-          "Too many attempts. Please wait before trying again."
-        );
+        toast.error("Too many attempts. Please wait before trying again.");
       } else {
         toast.error(
           "Could not resend the verification email. Please try again later."
         );
       }
     } finally {
-      if (signedIn) {
-        try {
+      try {
+        if (auth.currentUser) {
           await signOut(auth);
-        } catch (signOutError) {
-          console.error(
-            "Sign-out after verification attempt failed:",
-            signOutError
-          );
         }
+      } catch (signOutError) {
+        console.error("Sign-out after verification attempt failed:", signOutError);
       }
 
+      clearLoginSession();
       setAuthLoading(false);
     }
   };
+
 
 
 
@@ -747,8 +945,8 @@ const Navbar = () => {
   return (
     <div className="relative">
       <nav className="bg-white shadow-md">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between">
+        <div className="w-full max-w-none mx-auto px-4 sm:px-6 lg:px-10 xl:px-12">
+          <div className="flex h-16 w-full items-center">
             {/* Logo */}
             <div className="shrink-0">
               <Link
@@ -767,7 +965,7 @@ const Navbar = () => {
             </div>
 
             {/* Desktop navigation and search */}
-            <div className="hidden items-center space-x-8 md:flex">
+            <div className="hidden flex-1 items-center justify-center gap-6 lg:gap-8 px-4 md:flex">
               <Link
                 href="/internship"
                 className="text-gray-700 hover:text-blue-600"
@@ -843,7 +1041,7 @@ const Navbar = () => {
             </div>
 
             {/* Language and authentication */}
-            <div className="flex items-center space-x-4">
+            <div className="ml-auto flex shrink-0 items-center gap-3">
               <select
                 value={language}
                 onChange={handleLanguageChange}
@@ -899,7 +1097,7 @@ const Navbar = () => {
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center space-x-3">
+                <div className="flex shrink-0 items-center gap-3">
                   <button
                     type="button"
                     onClick={openLoginModal}
@@ -916,7 +1114,7 @@ const Navbar = () => {
                     type="button"
                     onClick={handleLogin}
                     disabled={authLoading}
-                    className="flex items-center justify-center space-x-2 rounded-lg border border-gray-300 px-4 py-2 hover:bg-gray-50 disabled:opacity-50"
+                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
                   >
                     <svg
                       className="h-5 w-5"
@@ -1225,6 +1423,141 @@ const Navbar = () => {
           </div>
 
 
+        </div>
+      )}
+
+      {showUsernameSetup && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/60 px-4 py-6">
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-8"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="username-setup-title"
+          >
+            <h2
+              id="username-setup-title"
+              className="text-2xl font-bold text-gray-900"
+            >
+              Choose your username
+            </h2>
+
+            <p className="mt-2 text-sm text-gray-600">
+              Your username will help other Internarea members find and mention you.
+            </p>
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setUsernameMode("custom");
+                  setUsernameAvailable(null);
+                  setUsernameError("");
+                }}
+                className={`rounded-lg border p-3 text-sm font-semibold ${usernameMode === "custom"
+                    ? "border-blue-600 bg-blue-50 text-blue-700"
+                    : "border-gray-300 text-gray-700"
+                  }`}
+              >
+                Create my own
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setUsernameMode("generate");
+                  setUsernameAvailable(null);
+                  setUsernameError("");
+                }}
+                className={`rounded-lg border p-3 text-sm font-semibold ${usernameMode === "generate"
+                    ? "border-blue-600 bg-blue-50 text-blue-700"
+                    : "border-gray-300 text-gray-700"
+                  }`}
+              >
+                Generate for me
+              </button>
+            </div>
+
+            {usernameMode === "custom" ? (
+              <div className="mt-5">
+                <label
+                  htmlFor="new-internarea-username"
+                  className="mb-2 block text-sm font-medium text-gray-700"
+                >
+                  Your preferred username
+                </label>
+
+                <div className="flex items-center rounded-lg border border-gray-300 px-3 focus-within:border-blue-500">
+                  <span className="text-gray-500">@</span>
+                  <input
+                    id="new-internarea-username"
+                    type="text"
+                    value={newUsername}
+                    onChange={(event) => {
+                      setNewUsername(
+                        event.target.value
+                          .toLowerCase()
+                          .replace(/[^a-z0-9_]/g, "")
+                          .slice(0, 30)
+                      );
+                      setUsernameAvailable(null);
+                      setUsernameError("");
+                    }}
+                    placeholder="your_username"
+                    maxLength={30}
+                    className="w-full border-0 px-2 py-3 text-gray-900 outline-none"
+                  />
+                </div>
+
+                <p className="mt-2 text-xs text-gray-500">
+                  3–30 characters. Lowercase letters, numbers and underscores only.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={checkUsernameAvailability}
+                  disabled={usernameChecking || newUsername.length < 3}
+                  className="mt-3 w-full rounded-lg border border-blue-600 px-4 py-2.5 font-medium text-blue-600 disabled:opacity-50"
+                >
+                  {usernameChecking ? "Checking..." : "Check availability"}
+                </button>
+
+                {usernameAvailable === true && (
+                  <p className="mt-2 text-sm text-green-600">
+                    Username is available!
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="mt-5 rounded-lg bg-blue-50 p-4">
+                <p className="text-sm text-gray-700">
+                  Let Internarea generate a unique username based on your profile name.
+                  You can use it to complete your account setup.
+                </p>
+              </div>
+            )}
+
+            {usernameError && (
+              <p className="mt-3 text-sm text-red-600">
+                {usernameError}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={submitUsernameSetup}
+              disabled={
+                usernameSubmitting ||
+                (usernameMode === "custom" && usernameAvailable !== true)
+              }
+              className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {usernameSubmitting
+                ? "Saving username..."
+                : usernameMode === "custom"
+                  ? "Create my username"
+                  : "Generate and continue"}
+            </button>
+          </div>
         </div>
       )}
       {showLoginOtp && (
