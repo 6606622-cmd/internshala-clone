@@ -10,6 +10,8 @@ const Friendship = require("../PublicSpaceFriendship");
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 const adminApp = require("../../firebaseAdmin");
+const UserProfile = require("../UserProfile");
+const Notification = require("../PublicSpaceNotification");
 
 const firebaseAuth = getAuth(adminApp);
 
@@ -64,33 +66,79 @@ function extractMentions(text) {
   ].slice(0, 50);
 }
 
+async function resolveMentionedUsers(text) {
+  const usernames = extractMentions(text);
+
+  if (!usernames.length) return [];
+
+  return UserProfile.find({
+    username: { $in: usernames },
+  })
+    .select("firebaseUid username displayName")
+    .lean();
+}
+
+async function notifyMentionedUsers({
+  users,
+  actorUid,
+  postId,
+  actorName,
+  previousMentionedUids = [],
+}) {
+  const previous = new Set(previousMentionedUids);
+
+  const notifications = users
+    .filter(
+      (user) =>
+        user.firebaseUid !== actorUid &&
+        !previous.has(user.firebaseUid)
+    )
+    .map((user) => ({
+      recipientUid: user.firebaseUid,
+      actorUid,
+      type: "mention",
+      message: `${actorName || "Someone"} mentioned you in a post.`,
+      postId,
+    }));
+
+  if (!notifications.length) return;
+
+  try {
+    await Notification.insertMany(notifications, {
+      ordered: false,
+    });
+  } catch (error) {
+    console.error("Mention notification error:", error.message);
+  }
+}
+
 // Firebase user records provide displayName and photoURL.
 // Firebase does not have a native username field, so username is
 // generated from the display name as a fallback.
 
 async function getAuthorProfile(uid) {
   try {
-    const firebaseUser = await firebaseAuth.getUser(uid);
+    const [firebaseUser, profile] = await Promise.all([
+      firebaseAuth.getUser(uid),
+      UserProfile.findOne({ firebaseUid: uid })
+        .select("username displayName photoURL")
+        .lean(),
+    ]);
 
-    const displayName = firebaseUser.displayName || "";
-    const username = displayName
-      ? displayName
-          .normalize("NFKD")
-          .replace(/[^\p{L}\p{N}_]+/gu, "")
-          .toLowerCase()
-          .slice(0, 30)
-      : "";
-
-    console.log("Public Space author profile:", {
-      uid: firebaseUser.uid,
-      displayName,
-      hasPhoto: Boolean(firebaseUser.photoURL),
-    });
+    if (!profile) {
+      console.warn("UserProfile document not found for author:", uid);
+    }
 
     return {
-      displayName,
-      username,
-      photoURL: firebaseUser.photoURL || "",
+      displayName:
+        profile?.displayName ||
+        firebaseUser.displayName ||
+        "",
+      username: profile?.username || "",
+      photoURL:
+        profile?.photoURL ||
+        firebaseUser.photoURL ||
+        "",
     };
   } catch (error) {
     console.error("Could not load Public Space author profile:", {
@@ -106,7 +154,6 @@ async function getAuthorProfile(uid) {
     };
   }
 }
-
 
 async function getAcceptedFriendCount(uid) {
   return Friendship.countDocuments({
@@ -264,11 +311,10 @@ router.post("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => 
     }
 
     const authorProfile = await getAuthorProfile(uid);
-
+    const mentionedUsers = await resolveMentionedUsers(text);
     const editUntil = new Date(
       Date.now() + EDIT_WINDOW_MINUTES * 60 * 1000
     );
-
     const post = await Post.create({
       authorUid: uid,
       authorProfile,
@@ -279,7 +325,17 @@ router.post("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => 
       privacy,
       hashtags: extractHashtags(text),
       mentions: extractMentions(text),
+      mentionedUserUids: mentionedUsers.map(
+        (user) => user.firebaseUid
+      ),
       editUntil,
+    });
+
+    await notifyMentionedUsers({
+      users: mentionedUsers,
+      actorUid: uid,
+      postId: post._id,
+      actorName: post.authorProfile?.displayName || "",
     });
 
     return res.status(201).json({
@@ -500,17 +556,30 @@ router.patch("/:postId", requireFirebaseAuth, requireVerifiedLogin, async (req, 
       });
     }
 
+    const previousMentionedUids = post.mentionedUserUids || [];
+
+    const mentionedUsers = await resolveMentionedUsers(cleanText);
+
     post.text = cleanText;
     post.media = cleanMedia;
     post.mediaType = getMediaType(cleanText, cleanMedia);
     post.hashtags = extractHashtags(cleanText);
     post.mentions = extractMentions(cleanText);
-
+    post.mentionedUserUids = mentionedUsers.map(
+      (user) => user.firebaseUid
+    );
     if (privacy !== undefined) {
       post.privacy = privacy;
     }
 
     await post.save();
+    await notifyMentionedUsers({
+      users: mentionedUsers,
+      actorUid: uid,
+      postId: post._id,
+      actorName: post.authorProfile?.displayName || "",
+      previousMentionedUids,
+    });
 
     return res.json({
       success: true,
