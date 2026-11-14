@@ -8,6 +8,7 @@ const userProfileSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+
     username: {
       type: String,
       required: true,
@@ -18,11 +19,19 @@ const userProfileSchema = new mongoose.Schema(
       maxlength: 30,
       match: /^[a-z0-9_]+$/,
     },
+
+    // True only after the user chooses or accepts a username.
+    usernameChosen: {
+      type: Boolean,
+      default: false,
+    },
+
     displayName: {
       type: String,
       default: "",
       trim: true,
     },
+
     photoURL: {
       type: String,
       default: "",
@@ -30,6 +39,7 @@ const userProfileSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 module.exports =
   mongoose.models.UserProfile ||
   mongoose.model("UserProfile", userProfileSchema);

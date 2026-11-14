@@ -60,8 +60,8 @@ async function getFirebaseProfile(uid) {
     photoURL: user.photoURL || "",
   };
 }
-
-// Get current user's profile or automatically create one.
+// Get current user's profile.
+// If no profile exists, ask the frontend to show username setup.
 
 router.get(
   "/me",
@@ -71,77 +71,36 @@ router.get(
     try {
       const uid = req.firebaseUser.uid;
 
-      // Check whether this user already has a profile.
-      let profile = await UserProfile.findOne({
+      const profile = await UserProfile.findOne({
         firebaseUid: uid,
-      });
+      }).lean();
 
-      // Return existing profile.
-      if (profile) {
+      const firebaseProfile = await getFirebaseProfile(uid);
+
+      // No profile, or an old automatically generated username.
+      if (!profile || profile.usernameChosen !== true) {
         return res.status(200).json({
           success: true,
-          profile,
-          needsUsername: false,
+          profile: profile || null,
+          needsUsername: true,
+          user: {
+            displayName: firebaseProfile.displayName,
+            photoURL: firebaseProfile.photoURL,
+          },
         });
       }
 
-      // Get user details from Firebase.
-      const firebaseUser = await firebaseAuth.getUser(uid);
-
-      const displayName =
-        firebaseUser.displayName ||
-        firebaseUser.email?.split("@")[0] ||
-        "Internarea User";
-
-      const photoURL = firebaseUser.photoURL || "";
-
-      // Generate and save a unique username.
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const username = await generateUniqueUsername(
-          displayName,
-          uid
-        );
-
-        try {
-          profile = await UserProfile.create({
-            firebaseUid: uid,
-            username,
-            displayName,
-            photoURL,
-          });
-
-          break;
-        } catch (createError) {
-          if (createError.code !== 11000) {
-            throw createError;
-          }
-
-          // Handle duplicate username or simultaneous creation.
-          profile = await UserProfile.findOne({
-            firebaseUid: uid,
-          });
-
-          if (profile) break;
-        }
-      }
-
-      if (!profile) {
-        throw new Error(
-          "Unable to generate a unique username."
-        );
-      }
-
-      return res.status(201).json({
+      return res.status(200).json({
         success: true,
         profile,
         needsUsername: false,
       });
     } catch (error) {
-      console.error("Get or create user profile error:", error);
+      console.error("Get user profile error:", error);
 
       return res.status(500).json({
         success: false,
-        message: "Could not load or create your profile.",
+        message: "Could not load your profile.",
       });
     }
   }
@@ -187,6 +146,7 @@ router.get(
 );
 
 // Create a username: custom or automatically generated.
+
 router.post(
   "/setup",
   requireFirebaseAuth,
@@ -200,18 +160,6 @@ router.post(
         return res.status(400).json({
           success: false,
           message: "Choose custom or generate mode.",
-        });
-      }
-
-      const existingProfile = await UserProfile.findOne({
-        firebaseUid: uid,
-      });
-
-      if (existingProfile) {
-        return res.status(409).json({
-          success: false,
-          message: "Your username is already set.",
-          profile: existingProfile,
         });
       }
 
@@ -236,16 +184,29 @@ router.post(
         );
       }
 
-      const profile = await UserProfile.create({
-        firebaseUid: uid,
-        username,
-        displayName: firebaseProfile.displayName,
-        photoURL: firebaseProfile.photoURL,
-      });
+      // Create a new profile or update an old automatically
+      // generated profile without deleting existing user data.
+      const profile = await UserProfile.findOneAndUpdate(
+        { firebaseUid: uid },
+        {
+          $set: {
+            username,
+            usernameChosen: true,
+            displayName: firebaseProfile.displayName,
+            photoURL: firebaseProfile.photoURL,
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+          setDefaultsOnInsert: true,
+        }
+      );
 
-      return res.status(201).json({
+      return res.status(200).json({
         success: true,
-        message: "Username created successfully.",
+        message: "Username saved successfully.",
         profile,
       });
     } catch (error) {
@@ -256,15 +217,16 @@ router.post(
         });
       }
 
-      console.error("Create username error:", error.message);
+      console.error("Create username error:", error);
 
       return res.status(500).json({
         success: false,
-        message: "Could not create username.",
+        message: "Could not save username.",
       });
     }
   }
 );
+
 
 // Change username later.
 router.patch(
@@ -286,7 +248,12 @@ router.patch(
 
       const profile = await UserProfile.findOneAndUpdate(
         { firebaseUid: uid },
-        { $set: { username } },
+        {
+          $set: {
+            username,
+            usernameChosen: true,
+          },
+        },
         { new: true, runValidators: true }
       );
 
