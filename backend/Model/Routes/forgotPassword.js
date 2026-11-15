@@ -92,7 +92,8 @@ async function reserveCooldown(firebaseUid, resetMethod) {
                     resetMethod,
                 });
 
-                return true;
+                // Return the actual reservation timestamp.
+                return now;
             } catch (error) {
                 if (error.code !== 11000) throw error;
                 continue;
@@ -113,7 +114,8 @@ async function reserveCooldown(firebaseUid, resetMethod) {
             { returnDocument: "after" }
         );
 
-        return Boolean(updated);
+        // Return the timestamp, not just true/false.
+        return updated ? updated.lastRequestedAt : false;
     }
 
     return false;
@@ -186,28 +188,18 @@ async function sendTemporaryPasswordEmail(email, temporaryPassword) {
             "If you did not request this reset, contact support.",
     });
 }
-
-
 async function releaseCooldownAfterDeliveryFailure(
     firebaseUid,
     resetMethod,
-    historyId
+    reservationTime
 ) {
-    const history = await PasswordResetHistory.findById(historyId)
-        .select("requestedAt")
-        .lean();
-
-    if (!history?.requestedAt) return;
-
-    const requestedAt = new Date(history.requestedAt).getTime();
-    const lower = new Date(requestedAt - 10000);
-    const upper = new Date(requestedAt + 10000);
+    if (!(reservationTime instanceof Date)) return;
 
     await PasswordResetCooldown.updateOne(
         {
             firebaseUid,
             resetMethod,
-            lastRequestedAt: { $gte: lower, $lte: upper },
+            lastRequestedAt: reservationTime,
         },
         {
             $set: {
@@ -402,9 +394,9 @@ router.post("/request", async (req, res) => {
             });
         }
 
-        const allowed = await reserveCooldown(user.uid, "email");
+        const cooldownReservation = await reserveCooldown(user.uid, "email");
 
-        if (!allowed) {
+        if (!cooldownReservation) {
             return res.status(429).json({
                 success: false,
                 message: "You can use this option only once per day.",
@@ -457,9 +449,8 @@ router.post("/request", async (req, res) => {
             await releaseCooldownAfterDeliveryFailure(
                 user.uid,
                 "email",
-                history._id
+                cooldownReservation
             );
-
             throw error;
         }
 
@@ -777,7 +768,7 @@ router.post("/complete-email", async (req, res) => {
             message: "Invalid recovery details or password. Please check and try again.",
         });
     }
-
+    let passwordUpdated = false;
     try {
         const user = await findPasswordAccountByEmail(email);
 
@@ -790,7 +781,6 @@ router.post("/complete-email", async (req, res) => {
 
         const tokenHash = hashSecret(resetToken);
 
-        // Find the matching, unexpired recovery session.
         const challenge = await PasswordResetChallenge.findOne({
             firebaseUid: user.uid,
             resetMethod: "email",
@@ -807,11 +797,14 @@ router.post("/complete-email", async (req, res) => {
             });
         }
 
-        // Consume the token atomically so it cannot be reused.
+        const originalTokenHash = challenge.resetTokenHash;
+        const originalTokenExpiry = challenge.resetTokenExpiresAt;
+
+        // Atomically claim the token so simultaneous requests cannot use it.
         const consumed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
-                resetTokenHash: challenge.resetTokenHash,
+                resetTokenHash: originalTokenHash,
                 resetTokenExpiresAt: { $gt: new Date() },
             },
             {
@@ -830,21 +823,44 @@ router.post("/complete-email", async (req, res) => {
             });
         }
 
-        // Set the exact password chosen by the user.
-        await auth.updateUser(user.uid, {
-            password: newPassword,
-        });
+        try {
+            await auth.updateUser(user.uid, {
+                password: newPassword,
+            });
+            passwordUpdated = true;
 
-        // Remove any old temporary-password requirement.
-        const updatedClaims = { ...(user.customClaims || {}) };
-        delete updatedClaims.mustChangePassword;
+            const latestUser = await auth.getUser(user.uid);
+            const updatedClaims = { ...(latestUser.customClaims || {}) };
+            delete updatedClaims.mustChangePassword;
 
-        await auth.setCustomUserClaims(user.uid, updatedClaims);
+            await auth.setCustomUserClaims(user.uid, updatedClaims);
+            await auth.revokeRefreshTokens(user.uid);
+        } catch (updateError) {
+            // Restore the token only if Firebase did not update the password.
+            if (!passwordUpdated) {
+                await PasswordResetChallenge.updateOne(
+                    {
+                        _id: challenge._id,
+                        resetTokenHash: "",
+                        resetTokenExpiresAt: null,
+                    },
+                    {
+                        $set: {
+                            resetTokenHash: originalTokenHash,
+                            resetTokenExpiresAt: originalTokenExpiry,
+                        },
+                    }
+                );
+            }
+
+            throw updateError;
+        }
 
         await markHistory(challenge.historyId, {
             verificationStatus: "completed",
             completedAt: new Date(),
             failureReason: "",
+            passwordUpdatedAt: new Date(),
         });
 
         return res.json({
@@ -863,6 +879,7 @@ router.post("/complete-email", async (req, res) => {
         });
     }
 });
+
 
 // PHONE: prepare recovery before Firebase sends its OTP.
 router.post("/phone/request", async (req, res) => {
@@ -920,6 +937,12 @@ router.post("/phone/request", async (req, res) => {
                     resetTokenHash: "",
                     resetTokenExpiresAt: null,
                     historyId: history._id,
+                    deliveryStatus: "not_started",
+                    deliveryAttempts: 0,
+                    passwordUpdatedAt: null,
+                    temporaryPasswordEncrypted: "",
+                    temporaryPasswordIv: "",
+                    temporaryPasswordAuthTag: "",
                 },
             },
             { upsert: true, returnDocument: "after", runValidators: true }
@@ -940,9 +963,12 @@ router.post("/phone/request", async (req, res) => {
 });
 // PHONE: verify Firebase OTP, save an encrypted password,
 // update Firebase, and deliver it through registered email.
+
 router.post("/phone/complete", async (req, res) => {
     const idToken =
         typeof req.body.idToken === "string" ? req.body.idToken : "";
+
+    const newPassword = req.body.newPassword;
 
     if (!idToken || idToken.length > 10000) {
         return res.status(400).json({
@@ -950,6 +976,24 @@ router.post("/phone/complete", async (req, res) => {
             message: "Complete phone verification before continuing.",
         });
     }
+
+    if (
+        typeof newPassword !== "string" ||
+        newPassword.length < 8 ||
+        newPassword.length > 128
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: "Password must be between 8 and 128 characters.",
+        });
+    }
+
+    let user;
+    let challenge;
+    let cooldownReserved = false;
+    let cooldownReservation = null;
+    let challengeClaimed = false;
+    let passwordUpdated = false;
 
     try {
         const decoded = await auth.verifyIdToken(idToken, true);
@@ -961,7 +1005,7 @@ router.post("/phone/complete", async (req, res) => {
             });
         }
 
-        const user = await auth.getUser(decoded.uid);
+        user = await auth.getUser(decoded.uid);
 
         if (!user.phoneNumber || user.phoneNumber !== decoded.phone_number) {
             return res.status(403).json({
@@ -981,7 +1025,7 @@ router.post("/phone/complete", async (req, res) => {
             });
         }
 
-        const challenge = await PasswordResetChallenge.findOne({
+        challenge = await PasswordResetChallenge.findOne({
             firebaseUid: user.uid,
             resetMethod: "phone",
             otpExpiresAt: { $gt: new Date() },
@@ -995,20 +1039,18 @@ router.post("/phone/complete", async (req, res) => {
             });
         }
 
-        const allowed = await reserveCooldown(user.uid, "phone");
+        cooldownReservation = await reserveCooldown(user.uid, "phone");
 
-        if (!allowed) {
+        if (!cooldownReservation) {
             return res.status(429).json({
                 success: false,
                 message: "Password recovery is limited to once every 24 hours.",
             });
         }
 
-        // Generate and encrypt before changing the Firebase password.
-        const temporaryPassword = generateTemporaryPassword();
-        const encrypted = encryptTemporaryPassword(temporaryPassword);
+        cooldownReserved = true;
 
-        // Atomically consume the phone verification and save the encrypted password.
+        // Claim this phone challenge to prevent simultaneous password resets.
         const claimed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
@@ -1016,43 +1058,74 @@ router.post("/phone/complete", async (req, res) => {
                 resetMethod: "phone",
                 otpExpiresAt: { $gt: new Date() },
                 deliveryStatus: "not_started",
-                temporaryPasswordEncrypted: "",
             },
             {
                 $set: {
-                    otpExpiresAt: null,
-                    otpHash: "",
-                    temporaryPasswordEncrypted: encrypted.encrypted,
-                    temporaryPasswordIv: encrypted.iv,
-                    temporaryPasswordAuthTag: encrypted.authTag,
                     deliveryStatus: "pending",
                 },
             },
             { returnDocument: "after" }
-        ).select(
-            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
         );
 
         if (!claimed) {
-            return res.status(400).json({
+            await releaseCooldownAfterDeliveryFailure(
+                user.uid,
+                "phone",
+                cooldownReservation
+            );
+            cooldownReserved = false;
+
+            return res.status(409).json({
                 success: false,
                 message: "Phone recovery session was already used. Please try again.",
             });
         }
 
-        await markHistory(claimed.historyId, {
-            verificationStatus: "verified",
-            verifiedAt: new Date(),
-            deliveryStatus: "pending",
+        challengeClaimed = true;
+
+        await auth.updateUser(user.uid, {
+            password: newPassword,
         });
 
-        await deliverTemporaryPassword(user, claimed);
+        passwordUpdated = true;
+
+        // Save completion immediately after Firebase accepts the new password.
+        // Do not reopen this challenge if a later operation fails.
+        await PasswordResetChallenge.updateOne(
+            { _id: claimed._id, deliveryStatus: "pending" },
+            {
+                $set: {
+                    otpExpiresAt: null,
+                    otpHash: "",
+                    deliveryStatus: "sent",
+                    passwordUpdatedAt: new Date(),
+                    temporaryPasswordEncrypted: "",
+                    temporaryPasswordIv: "",
+                    temporaryPasswordAuthTag: "",
+                },
+            }
+        );
+
+        await markHistory(claimed.historyId, {
+            verificationStatus: "completed",
+            verifiedAt: new Date(),
+            completedAt: new Date(),
+            deliveryStatus: "sent",
+            passwordUpdatedAt: new Date(),
+            failureReason: "",
+        });
+
+        // Clear the forced-change claim and revoke existing refresh tokens.
+        const latestUser = await auth.getUser(user.uid);
+        const updatedClaims = { ...(latestUser.customClaims || {}) };
+        delete updatedClaims.mustChangePassword;
+
+        await auth.setCustomUserClaims(user.uid, updatedClaims);
+        await auth.revokeRefreshTokens(user.uid);
 
         return res.json({
             success: true,
-            mustChangePassword: true,
-            message:
-                "Phone verified. A temporary password has been sent to your registered email. Sign in and change it immediately.",
+            message: "Your password has been updated successfully. You can now sign in.",
         });
     } catch (error) {
         console.error(
@@ -1060,13 +1133,47 @@ router.post("/phone/complete", async (req, res) => {
             error.code || error.message
         );
 
+        // Allow a retry if the password update itself failed.
+        // Reopen the challenge only if Firebase did not update the password.
+        if (!passwordUpdated && challengeClaimed && challenge?._id) {
+            await PasswordResetChallenge.updateOne(
+                {
+                    _id: challenge._id,
+                    deliveryStatus: "pending",
+                    passwordUpdatedAt: { $exists: false },
+                },
+                {
+                    $set: {
+                        deliveryStatus: "not_started",
+                    },
+                }
+            ).catch(() => { });
+        }
+
+        // Release the cooldown only if the password was not updated.
+        if (!passwordUpdated && cooldownReserved && user && cooldownReservation) {
+            await releaseCooldownAfterDeliveryFailure(
+                user.uid,
+                "phone",
+                cooldownReservation
+            ).catch(() => { });
+        }
+        if (cooldownReserved && user && challenge?.historyId) {
+            await releaseCooldownAfterDeliveryFailure(
+                user.uid,
+                "phone",
+                challenge.historyId
+            ).catch(() => { });
+        }
         return res.status(500).json({
             success: false,
-            message:
-                "Recovery could not be completed. If your password was changed, use the delivery retry option.",
+            message: passwordUpdated
+                ? "Your password may already have changed. Try signing in with your new password."
+                : "Unable to complete phone recovery right now. Please try again.",
         });
     }
 });
+
 
 // PHONE: retry delivery of the already-generated temporary password.
 router.post("/phone/retry-delivery", async (req, res) => {
