@@ -1,5 +1,5 @@
+
 const express = require("express");
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const { getAuth } = require("firebase-admin/auth");
 
@@ -16,6 +16,7 @@ const RESET_TOKEN_EXPIRY_MS = 10 * 60 * 1000;
 const OTP_RESEND_MS = 60 * 1000;
 const RESET_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
+const MAX_RESENDS = 5;
 
 function hashSecret(value) {
     const pepper = process.env.OTP_PEPPER;
@@ -47,7 +48,17 @@ function safeCompareHex(a, b) {
 }
 
 function createOtp() {
-    return crypto.randomInt(0, 1000000).toString().padStart(6, "0");
+    return crypto.randomInt(0, 1000000)
+        .toString()
+        .padStart(6, "0");
+}
+
+function validEmail(value) {
+    return (
+        typeof value === "string" &&
+        value.length <= 254 &&
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+    );
 }
 
 function getRequestMetadata(req) {
@@ -60,22 +71,82 @@ function getRequestMetadata(req) {
     };
 }
 
-function emailTransport() {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        throw new Error("Email service is not configured.");
+
+async function sendOtpEmail(email, otp) {
+    const apiKey = process.env.BREVO_API_KEY;
+    const senderEmail = process.env.EMAIL_USER;
+
+    if (!apiKey || !senderEmail) {
+        throw new Error(
+            "Brevo email configuration is missing."
+        );
     }
 
-    return nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS,
-        },
-    });
+    const response = await fetch(
+        "https://api.brevo.com/v3/smtp/email",
+        {
+            method: "POST",
+            headers: {
+                "accept": "application/json",
+                "api-key": apiKey,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                sender: {
+                    name: "InternArea",
+                    email: senderEmail,
+                },
+                to: [
+                    {
+                        email,
+                    },
+                ],
+                subject: "Your InternArea password recovery code",
+                textContent:
+                    `Your InternArea verification code is ${otp}.\n\n` +
+                    "This code expires in 5 minutes. If you did not request it, ignore this email.",
+            }),
+            signal: AbortSignal.timeout(20000),
+        }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        console.error(
+            "Brevo API error:",
+            response.status,
+            result.message || result.code || "Unknown error"
+        );
+
+        throw new Error(
+            `Brevo email delivery request failed (${response.status}).`
+        );
+    }
+
+    console.log("Brevo accepted recovery email:", result.messageId);
 }
 
-// Atomically reserves the account's 24-hour recovery window.
-async function reserveCooldown(firebaseUid, resetMethod) {
+
+async function findPasswordAccountByEmail(email) {
+    try {
+        const user = await auth.getUserByEmail(email);
+
+        const hasPasswordProvider = (user.providerData || []).some(
+            (provider) => provider.providerId === "password"
+        );
+
+        return hasPasswordProvider ? user : null;
+    } catch (error) {
+        if (error.code === "auth/user-not-found") {
+            return null;
+        }
+
+        throw error;
+    }
+}
+
+async function reserveCooldown(firebaseUid) {
     const now = new Date();
     const cutoff = new Date(now.getTime() - RESET_COOLDOWN_MS);
 
@@ -89,14 +160,16 @@ async function reserveCooldown(firebaseUid, resetMethod) {
                 await PasswordResetCooldown.create({
                     firebaseUid,
                     lastRequestedAt: now,
-                    resetMethod,
+                    resetMethod: "email",
                 });
 
-                // Return the actual reservation timestamp.
                 return now;
             } catch (error) {
-                if (error.code !== 11000) throw error;
-                continue;
+                if (error.code === 11000) {
+                    continue;
+                }
+
+                throw error;
             }
         }
 
@@ -108,97 +181,27 @@ async function reserveCooldown(firebaseUid, resetMethod) {
             {
                 $set: {
                     lastRequestedAt: now,
-                    resetMethod,
+                    resetMethod: "email",
                 },
             },
-            { returnDocument: "after" }
+            { new: true }
         );
 
-        // Return the timestamp, not just true/false.
         return updated ? updated.lastRequestedAt : false;
     }
 
     return false;
 }
 
-async function createHistory(user, resetMethod, req) {
-    return PasswordResetHistory.create({
-        firebaseUid: user.uid,
-        email: user.email || "",
-        resetMethod,
-        verificationStatus: "requested",
-        ...getRequestMetadata(req),
-    });
-}
-
-async function markHistory(historyId, values) {
-    await PasswordResetHistory.findByIdAndUpdate(historyId, {
-        $set: values,
-    });
-}
-
-function validEmail(value) {
-    return (
-        typeof value === "string" &&
-        value.length <= 254 &&
-        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
-    );
-}
-
-function validPhone(value) {
-    // Firebase phone numbers must be in E.164 format, e.g. +919876543210.
-    return typeof value === "string" && /^\+[1-9]\d{7,14}$/.test(value);
-}
-
-async function sendOtpEmail(email, otp) {
-    const transporter = emailTransport();
-
-    await transporter.sendMail({
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: "Your InternArea password recovery code",
-        text:
-            `Your InternArea verification code is ${otp}.\n\n` +
-            "It expires in 5 minutes. If you did not request this, ignore this email.",
-    });
-}
-
-// Temporary passwords contain English letters only.
-function generateTemporaryPassword(length = 16) {
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let password = "";
-
-    for (let i = 0; i < length; i++) {
-        password += alphabet[crypto.randomInt(0, alphabet.length)];
+async function releaseCooldown(firebaseUid, reservationTime) {
+    if (!(reservationTime instanceof Date)) {
+        return;
     }
-
-    return password;
-}
-
-async function sendTemporaryPasswordEmail(email, temporaryPassword) {
-    const transporter = emailTransport();
-
-    await transporter.sendMail({
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: "Your InternArea temporary password",
-        text:
-            `Your temporary password is: ${temporaryPassword}\n\n` +
-            "Sign in and change this password immediately.\n" +
-            "If you did not request this reset, contact support.",
-    });
-}
-async function releaseCooldownAfterDeliveryFailure(
-    firebaseUid,
-    resetMethod,
-    reservationTime
-) {
-    if (!(reservationTime instanceof Date)) return;
 
     await PasswordResetCooldown.updateOne(
         {
             firebaseUid,
-            resetMethod,
+            resetMethod: "email",
             lastRequestedAt: reservationTime,
         },
         {
@@ -211,164 +214,32 @@ async function releaseCooldownAfterDeliveryFailure(
     );
 }
 
-async function findPasswordAccountByEmail(email) {
-    try {
-        const user = await auth.getUserByEmail(email);
+async function createHistory(user, req) {
+    return PasswordResetHistory.create({
+        firebaseUid: user.uid,
+        email: user.email || "",
+        resetMethod: "email",
+        verificationStatus: "requested",
+        ...getRequestMetadata(req),
+    });
+}
 
-        // Do not add a password to a Google-only account.
-        const hasPasswordProvider = (user.providerData || []).some(
-            (provider) => provider.providerId === "password"
-        );
+async function markHistory(historyId, values) {
+    if (!historyId) return;
 
-        return hasPasswordProvider ? user : null;
-    } catch (error) {
-        if (error.code === "auth/user-not-found") return null;
-        throw error;
-    }
+    await PasswordResetHistory.findByIdAndUpdate(historyId, {
+        $set: values,
+    });
 }
 
 router.get("/", (req, res) => {
     res.json({
         success: true,
-        message: "Password recovery service is available.",
+        message: "Email password recovery service is available.",
     });
 });
 
-// AES-256-GCM encryption for temporary passwords.
-function getRecoveryEncryptionKey() {
-    const keyHex = process.env.RECOVERY_ENCRYPTION_KEY;
-
-    if (!keyHex || !/^[a-fA-F0-9]{64}$/.test(keyHex)) {
-        throw new Error(
-            "RECOVERY_ENCRYPTION_KEY must be exactly 64 hexadecimal characters."
-        );
-    }
-
-    return Buffer.from(keyHex, "hex");
-}
-
-function encryptTemporaryPassword(password) {
-    const key = getRecoveryEncryptionKey();
-    const iv = crypto.randomBytes(12);
-
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-
-    const encrypted = Buffer.concat([
-        cipher.update(password, "utf8"),
-        cipher.final(),
-    ]);
-
-    return {
-        encrypted: encrypted.toString("hex"),
-        iv: iv.toString("hex"),
-        authTag: cipher.getAuthTag().toString("hex"),
-    };
-}
-
-function decryptTemporaryPassword(challenge) {
-    const key = getRecoveryEncryptionKey();
-
-    if (
-        !challenge?.temporaryPasswordEncrypted ||
-        !challenge?.temporaryPasswordIv ||
-        !challenge?.temporaryPasswordAuthTag
-    ) {
-        throw new Error("Encrypted temporary password is unavailable.");
-    }
-
-    const decipher = crypto.createDecipheriv(
-        "aes-256-gcm",
-        key,
-        Buffer.from(challenge.temporaryPasswordIv, "hex")
-    );
-
-    decipher.setAuthTag(
-        Buffer.from(challenge.temporaryPasswordAuthTag, "hex")
-    );
-
-    return Buffer.concat([
-        decipher.update(
-            Buffer.from(challenge.temporaryPasswordEncrypted, "hex")
-        ),
-        decipher.final(),
-    ]).toString("utf8");
-}
-
-async function deliverTemporaryPassword(user, challenge) {
-    try {
-        // Recover the exact same password on every retry.
-        const temporaryPassword = decryptTemporaryPassword(challenge);
-
-        // Update Firebase only if this password has not already been applied.
-        if (!challenge.passwordUpdatedAt) {
-            await auth.updateUser(user.uid, {
-                password: temporaryPassword,
-            });
-
-            const latestUser = await auth.getUser(user.uid);
-
-            await auth.setCustomUserClaims(user.uid, {
-                ...(latestUser.customClaims || {}),
-                mustChangePassword: true,
-            });
-
-            await PasswordResetChallenge.updateOne(
-                { _id: challenge._id },
-                { $set: { passwordUpdatedAt: new Date() } }
-            );
-        }
-
-        await PasswordResetChallenge.updateOne(
-            { _id: challenge._id },
-            { $inc: { deliveryAttempts: 1 } }
-        );
-
-        // Send the same password that was saved in encrypted form.
-        await sendTemporaryPasswordEmail(
-            user.email,
-            temporaryPassword
-        );
-
-        await PasswordResetChallenge.updateOne(
-            { _id: challenge._id },
-            { $set: { deliveryStatus: "sent" } }
-        );
-
-        await markHistory(challenge.historyId, {
-            verificationStatus: "completed",
-            completedAt: new Date(),
-            deliveryStatus: "sent",
-            failureReason: "",
-        });
-
-        // Revoke old Firebase refresh tokens after successful delivery.
-        try {
-            await auth.revokeRefreshTokens(user.uid);
-        } catch (revokeError) {
-            console.error(
-                "Refresh-token revocation failed:",
-                revokeError.code || revokeError.message
-            );
-        }
-
-        return true;
-    } catch (error) {
-        await PasswordResetChallenge.updateOne(
-            { _id: challenge._id },
-            { $set: { deliveryStatus: "failed" } }
-        );
-
-        await markHistory(challenge.historyId, {
-            verificationStatus: "failed",
-            deliveryStatus: "failed",
-            failureReason: "Temporary password delivery or processing failed",
-        });
-
-        throw error;
-    }
-}
-
-// EMAIL: request a verification code.
+// REQUEST EMAIL OTP
 router.post("/request", async (req, res) => {
     const email =
         typeof req.body.email === "string"
@@ -382,10 +253,13 @@ router.post("/request", async (req, res) => {
         });
     }
 
-    try {
-        const user = await findPasswordAccountByEmail(email);
+    let user = null;
+    let reservationTime = null;
+    let history = null;
 
-        // Avoid revealing whether an account exists.
+    try {
+        user = await findPasswordAccountByEmail(email);
+
         if (!user) {
             return res.json({
                 success: true,
@@ -394,16 +268,18 @@ router.post("/request", async (req, res) => {
             });
         }
 
-        const cooldownReservation = await reserveCooldown(user.uid, "email");
+        reservationTime = await reserveCooldown(user.uid);
 
-        if (!cooldownReservation) {
+        if (!reservationTime) {
             return res.status(429).json({
                 success: false,
-                message: "You can use this option only once per day.",
+                message:
+                    "Password recovery is limited to once every 24 hours.",
             });
         }
 
-        const history = await createHistory(user, "email", req);
+        history = await createHistory(user, req);
+
         const otp = createOtp();
 
         await PasswordResetChallenge.findOneAndUpdate(
@@ -422,17 +298,40 @@ router.post("/request", async (req, res) => {
                     historyId: history._id,
                 },
             },
-            { upsert: true, returnDocument: "after", runValidators: true }
+            {
+                upsert: true,
+                new: true,
+                runValidators: true,
+            }
         );
 
-        try {
-            await sendOtpEmail(user.email || email, otp);
-        } catch (error) {
+        await sendOtpEmail(user.email || email, otp);
+
+        return res.json({
+            success: true,
+            message: "A verification code has been sent to your email.",
+        });
+    } catch (error) {
+        console.error(
+            "Email recovery request failed:",
+            error.code || error.message
+        );
+
+        if (history) {
             await markHistory(history._id, {
                 verificationStatus: "failed",
-                failureReason: "Email delivery failed",
-            });
+                failureReason: "Email recovery request failed",
+            }).catch(() => {});
+        }
 
+        if (user && reservationTime) {
+            await releaseCooldown(
+                user.uid,
+                reservationTime
+            ).catch(() => {});
+        }
+
+        if (user && history) {
             await PasswordResetChallenge.updateOne(
                 {
                     firebaseUid: user.uid,
@@ -444,30 +343,18 @@ router.post("/request", async (req, res) => {
                         otpExpiresAt: null,
                     },
                 }
-            );
-
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "email",
-                cooldownReservation
-            );
-            throw error;
+            ).catch(() => {});
         }
-
-        return res.json({
-            success: true,
-            message: "A verification code has been sent to your email.",
-        });
-    } catch (error) {
-        console.error("Email recovery request failed:", error.message);
 
         return res.status(500).json({
             success: false,
-            message: "Unable to process your request right now.",
+            message:
+                "Unable to send the verification email. Please try again later.",
         });
     }
 });
-// EMAIL: resend the current OTP, with a 60-second resend cooldown.
+
+// RESEND EMAIL OTP
 router.post("/resend", async (req, res) => {
     const email =
         typeof req.body.email === "string"
@@ -487,7 +374,7 @@ router.post("/resend", async (req, res) => {
         if (!user) {
             return res.json({
                 success: true,
-                message: "If an eligible recovery request exists, a code can be sent.",
+                message: "If eligible, a new verification code can be sent.",
             });
         }
 
@@ -513,37 +400,36 @@ router.post("/resend", async (req, res) => {
             });
         }
 
-        if (challenge.otpAttempts >= MAX_OTP_ATTEMPTS) {
+        if ((challenge.otpAttempts || 0) >= MAX_OTP_ATTEMPTS) {
             return res.status(429).json({
                 success: false,
-                message: "Too many attempts. Start a new recovery request when allowed.",
+                message: "Too many attempts. Please try again later.",
             });
         }
 
-        if ((challenge.otpResendCount || 0) >= 5) {
+        if ((challenge.otpResendCount || 0) >= MAX_RESENDS) {
             return res.status(429).json({
                 success: false,
-                message: "You have reached the resend limit. Please try again later.",
+                message: "You have reached the resend limit.",
             });
         }
 
         const otp = createOtp();
         const otpHash = hashSecret(otp);
-        const oldSentAt = challenge.lastOtpSentAt;
         const newSentAt = new Date();
 
         const claimed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
                 otpHash: challenge.otpHash,
-                lastOtpSentAt: oldSentAt,
                 otpAttempts: { $lt: MAX_OTP_ATTEMPTS },
-                otpResendCount: { $lt: 5 },
+                otpResendCount: { $lt: MAX_RESENDS },
+                lastOtpSentAt: challenge.lastOtpSentAt,
             },
             {
                 $set: {
-                    lastOtpSentAt: newSentAt,
                     otpHash,
+                    lastOtpSentAt: newSentAt,
                     otpExpiresAt: new Date(
                         newSentAt.getTime() + OTP_EXPIRY_MS
                     ),
@@ -552,7 +438,7 @@ router.post("/resend", async (req, res) => {
                     otpResendCount: 1,
                 },
             },
-            { returnDocument: "after" }
+            { new: true }
         );
 
         if (!claimed) {
@@ -567,21 +453,18 @@ router.post("/resend", async (req, res) => {
 
             await markHistory(challenge.historyId, {
                 verificationStatus: "requested",
-                verifiedAt: null,
-                completedAt: null,
                 failureReason: "",
             });
 
             return res.json({
                 success: true,
-                message: "If eligible, a new verification code has been sent.",
+                message: "A new verification code has been sent.",
             });
         } catch (error) {
             await PasswordResetChallenge.updateOne(
                 {
                     _id: challenge._id,
                     otpHash,
-                    historyId: challenge.historyId,
                 },
                 {
                     $set: {
@@ -593,7 +476,7 @@ router.post("/resend", async (req, res) => {
 
             await markHistory(challenge.historyId, {
                 verificationStatus: "failed",
-                failureReason: "Resend delivery failed",
+                failureReason: "OTP resend delivery failed",
             });
 
             throw error;
@@ -603,18 +486,22 @@ router.post("/resend", async (req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Unable to resend the code right now. Please try again later.",
+            message: "Unable to resend the code right now.",
         });
     }
 });
 
-// EMAIL: verify OTP and issue a short-lived, one-time reset token.
+// VERIFY EMAIL OTP
 router.post("/verify", async (req, res) => {
     const email =
         typeof req.body.email === "string"
             ? req.body.email.trim().toLowerCase()
             : "";
-    const otp = typeof req.body.otp === "string" ? req.body.otp.trim() : "";
+
+    const otp =
+        typeof req.body.otp === "string"
+            ? req.body.otp.trim()
+            : "";
 
     if (!validEmail(email) || !/^\d{6}$/.test(otp)) {
         return res.status(400).json({
@@ -629,7 +516,7 @@ router.post("/verify", async (req, res) => {
         if (!user) {
             return res.status(400).json({
                 success: false,
-                message: "The code is invalid or expired. Request a new one.",
+                message: "The code is invalid or expired.",
             });
         }
 
@@ -638,10 +525,14 @@ router.post("/verify", async (req, res) => {
             resetMethod: "email",
         }).select("+otpHash");
 
-        if (!challenge || !challenge.otpHash || !challenge.otpExpiresAt) {
+        if (
+            !challenge ||
+            !challenge.otpHash ||
+            !challenge.otpExpiresAt
+        ) {
             return res.status(400).json({
                 success: false,
-                message: "The code is invalid or expired. Request a new one.",
+                message: "The code is invalid or expired.",
             });
         }
 
@@ -656,10 +547,10 @@ router.post("/verify", async (req, res) => {
             });
         }
 
-        if (challenge.otpAttempts >= MAX_OTP_ATTEMPTS) {
+        if ((challenge.otpAttempts || 0) >= MAX_OTP_ATTEMPTS) {
             return res.status(429).json({
                 success: false,
-                message: "Too many incorrect attempts. Start a new recovery request.",
+                message: "Too many incorrect attempts.",
             });
         }
 
@@ -675,8 +566,10 @@ router.post("/verify", async (req, res) => {
                     otpHash: challenge.otpHash,
                     otpAttempts: { $lt: MAX_OTP_ATTEMPTS },
                 },
-                { $inc: { otpAttempts: 1 } },
-                { returnDocument: "after" }
+                {
+                    $inc: { otpAttempts: 1 },
+                },
+                { new: true }
             );
 
             if (updated && updated.otpAttempts >= MAX_OTP_ATTEMPTS) {
@@ -688,7 +581,7 @@ router.post("/verify", async (req, res) => {
 
             return res.status(400).json({
                 success: false,
-                message: "The code is invalid or expired. Request a new one.",
+                message: "The code is invalid or expired.",
             });
         }
 
@@ -712,13 +605,13 @@ router.post("/verify", async (req, res) => {
                     ),
                 },
             },
-            { returnDocument: "after" }
+            { new: true }
         );
 
         if (!claimed) {
             return res.status(400).json({
                 success: false,
-                message: "The code is invalid or expired. Request a new one.",
+                message: "The code is invalid or expired.",
             });
         }
 
@@ -730,7 +623,7 @@ router.post("/verify", async (req, res) => {
         return res.json({
             success: true,
             resetToken,
-            message: "Code verified. You can now continue recovery.",
+            message: "Email verified. You can now set a new password.",
         });
     } catch (error) {
         console.error("Email OTP verification failed:", error.message);
@@ -742,7 +635,7 @@ router.post("/verify", async (req, res) => {
     }
 });
 
-
+// COMPLETE EMAIL PASSWORD RESET
 router.post("/complete-email", async (req, res) => {
     const email =
         typeof req.body.email === "string"
@@ -765,10 +658,10 @@ router.post("/complete-email", async (req, res) => {
     ) {
         return res.status(400).json({
             success: false,
-            message: "Invalid recovery details or password. Please check and try again.",
+            message: "Invalid recovery details or password.",
         });
     }
-    let passwordUpdated = false;
+
     try {
         const user = await findPasswordAccountByEmail(email);
 
@@ -797,14 +690,10 @@ router.post("/complete-email", async (req, res) => {
             });
         }
 
-        const originalTokenHash = challenge.resetTokenHash;
-        const originalTokenExpiry = challenge.resetTokenExpiresAt;
-
-        // Atomically claim the token so simultaneous requests cannot use it.
         const consumed = await PasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
-                resetTokenHash: originalTokenHash,
+                resetTokenHash: challenge.resetTokenHash,
                 resetTokenExpiresAt: { $gt: new Date() },
             },
             {
@@ -813,7 +702,7 @@ router.post("/complete-email", async (req, res) => {
                     resetTokenExpiresAt: null,
                 },
             },
-            { returnDocument: "after" }
+            { new: true }
         );
 
         if (!consumed) {
@@ -827,31 +716,19 @@ router.post("/complete-email", async (req, res) => {
             await auth.updateUser(user.uid, {
                 password: newPassword,
             });
-            passwordUpdated = true;
 
             const latestUser = await auth.getUser(user.uid);
             const updatedClaims = { ...(latestUser.customClaims || {}) };
+
             delete updatedClaims.mustChangePassword;
 
             await auth.setCustomUserClaims(user.uid, updatedClaims);
             await auth.revokeRefreshTokens(user.uid);
         } catch (updateError) {
-            // Restore the token only if Firebase did not update the password.
-            if (!passwordUpdated) {
-                await PasswordResetChallenge.updateOne(
-                    {
-                        _id: challenge._id,
-                        resetTokenHash: "",
-                        resetTokenExpiresAt: null,
-                    },
-                    {
-                        $set: {
-                            resetTokenHash: originalTokenHash,
-                            resetTokenExpiresAt: originalTokenExpiry,
-                        },
-                    }
-                );
-            }
+            console.error(
+                "Firebase password update failed:",
+                updateError.code || updateError.message
+            );
 
             throw updateError;
         }
@@ -859,13 +736,13 @@ router.post("/complete-email", async (req, res) => {
         await markHistory(challenge.historyId, {
             verificationStatus: "completed",
             completedAt: new Date(),
-            failureReason: "",
             passwordUpdatedAt: new Date(),
+            failureReason: "",
         });
 
         return res.json({
             success: true,
-            message: "Your password has been updated successfully. You can now sign in.",
+            message: "Your password has been updated successfully.",
         });
     } catch (error) {
         console.error(
@@ -880,394 +757,7 @@ router.post("/complete-email", async (req, res) => {
     }
 });
 
-
-// PHONE: prepare recovery before Firebase sends its OTP.
-router.post("/phone/request", async (req, res) => {
-    const phoneNumber =
-        typeof req.body.phoneNumber === "string"
-            ? req.body.phoneNumber.trim()
-            : "";
-
-    if (!validPhone(phoneNumber)) {
-        return res.status(400).json({
-            success: false,
-            message: "Enter a valid phone number including country code.",
-        });
-    }
-
-    try {
-        let user;
-
-        try {
-            user = await auth.getUserByPhoneNumber(phoneNumber);
-        } catch (error) {
-            if (error.code === "auth/user-not-found") {
-                return res.json({
-                    success: true,
-                    message: "If an eligible account exists, continue with phone verification.",
-                });
-            }
-            throw error;
-        }
-
-        const hasPasswordProvider = (user.providerData || []).some(
-            provider => provider.providerId === "password"
-        );
-
-        if (!hasPasswordProvider || !user.email) {
-            return res.json({
-                success: true,
-                message: "If an eligible account exists, continue with phone verification.",
-            });
-        }
-
-        const history = await createHistory(user, "phone", req);
-
-        await PasswordResetChallenge.findOneAndUpdate(
-            { firebaseUid: user.uid },
-            {
-                $set: {
-                    email: user.email,
-                    resetMethod: "phone",
-                    otpHash: "",
-                    otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
-                    otpAttempts: 0,
-                    otpResendCount: 0,
-                    lastOtpSentAt: new Date(),
-                    resetTokenHash: "",
-                    resetTokenExpiresAt: null,
-                    historyId: history._id,
-                    deliveryStatus: "not_started",
-                    deliveryAttempts: 0,
-                    passwordUpdatedAt: null,
-                    temporaryPasswordEncrypted: "",
-                    temporaryPasswordIv: "",
-                    temporaryPasswordAuthTag: "",
-                },
-            },
-            { upsert: true, returnDocument: "after", runValidators: true }
-        );
-
-        return res.json({
-            success: true,
-            message: "Continue with Firebase phone verification.",
-        });
-    } catch (error) {
-        console.error("Phone recovery request failed:", error.message);
-
-        return res.status(500).json({
-            success: false,
-            message: "Unable to process phone recovery right now.",
-        });
-    }
-});
-// PHONE: verify Firebase OTP, save an encrypted password,
-// update Firebase, and deliver it through registered email.
-
-router.post("/phone/complete", async (req, res) => {
-    const idToken =
-        typeof req.body.idToken === "string" ? req.body.idToken : "";
-
-    const newPassword = req.body.newPassword;
-
-    if (!idToken || idToken.length > 10000) {
-        return res.status(400).json({
-            success: false,
-            message: "Complete phone verification before continuing.",
-        });
-    }
-
-    if (
-        typeof newPassword !== "string" ||
-        newPassword.length < 8 ||
-        newPassword.length > 128
-    ) {
-        return res.status(400).json({
-            success: false,
-            message: "Password must be between 8 and 128 characters.",
-        });
-    }
-
-    let user;
-    let challenge;
-    let cooldownReserved = false;
-    let cooldownReservation = null;
-    let challengeClaimed = false;
-    let passwordUpdated = false;
-
-    try {
-        const decoded = await auth.verifyIdToken(idToken, true);
-
-        if (decoded.firebase?.sign_in_provider !== "phone") {
-            return res.status(403).json({
-                success: false,
-                message: "Complete phone verification before continuing.",
-            });
-        }
-
-        user = await auth.getUser(decoded.uid);
-
-        if (!user.phoneNumber || user.phoneNumber !== decoded.phone_number) {
-            return res.status(403).json({
-                success: false,
-                message: "Verified phone number does not match this account.",
-            });
-        }
-
-        const hasPasswordProvider = (user.providerData || []).some(
-            provider => provider.providerId === "password"
-        );
-
-        if (!hasPasswordProvider || !user.email) {
-            return res.status(403).json({
-                success: false,
-                message: "This account is not eligible for password recovery.",
-            });
-        }
-
-        challenge = await PasswordResetChallenge.findOne({
-            firebaseUid: user.uid,
-            resetMethod: "phone",
-            otpExpiresAt: { $gt: new Date() },
-            deliveryStatus: "not_started",
-        });
-
-        if (!challenge) {
-            return res.status(400).json({
-                success: false,
-                message: "Phone recovery session is missing, expired, or already used.",
-            });
-        }
-
-        cooldownReservation = await reserveCooldown(user.uid, "phone");
-
-        if (!cooldownReservation) {
-            return res.status(429).json({
-                success: false,
-                message: "Password recovery is limited to once every 24 hours.",
-            });
-        }
-
-        cooldownReserved = true;
-
-        // Claim this phone challenge to prevent simultaneous password resets.
-        const claimed = await PasswordResetChallenge.findOneAndUpdate(
-            {
-                _id: challenge._id,
-                firebaseUid: user.uid,
-                resetMethod: "phone",
-                otpExpiresAt: { $gt: new Date() },
-                deliveryStatus: "not_started",
-            },
-            {
-                $set: {
-                    deliveryStatus: "pending",
-                },
-            },
-            { returnDocument: "after" }
-        );
-
-        if (!claimed) {
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "phone",
-                cooldownReservation
-            );
-            cooldownReserved = false;
-
-            return res.status(409).json({
-                success: false,
-                message: "Phone recovery session was already used. Please try again.",
-            });
-        }
-
-        challengeClaimed = true;
-
-        await auth.updateUser(user.uid, {
-            password: newPassword,
-        });
-
-        passwordUpdated = true;
-
-        // Save completion immediately after Firebase accepts the new password.
-        // Do not reopen this challenge if a later operation fails.
-        await PasswordResetChallenge.updateOne(
-            { _id: claimed._id, deliveryStatus: "pending" },
-            {
-                $set: {
-                    otpExpiresAt: null,
-                    otpHash: "",
-                    deliveryStatus: "sent",
-                    passwordUpdatedAt: new Date(),
-                    temporaryPasswordEncrypted: "",
-                    temporaryPasswordIv: "",
-                    temporaryPasswordAuthTag: "",
-                },
-            }
-        );
-
-        await markHistory(claimed.historyId, {
-            verificationStatus: "completed",
-            verifiedAt: new Date(),
-            completedAt: new Date(),
-            deliveryStatus: "sent",
-            passwordUpdatedAt: new Date(),
-            failureReason: "",
-        });
-
-        // Clear the forced-change claim and revoke existing refresh tokens.
-        const latestUser = await auth.getUser(user.uid);
-        const updatedClaims = { ...(latestUser.customClaims || {}) };
-        delete updatedClaims.mustChangePassword;
-
-        await auth.setCustomUserClaims(user.uid, updatedClaims);
-        await auth.revokeRefreshTokens(user.uid);
-
-        return res.json({
-            success: true,
-            message: "Your password has been updated successfully. You can now sign in.",
-        });
-    } catch (error) {
-        console.error(
-            "Phone password recovery failed:",
-            error.code || error.message
-        );
-
-        // Allow a retry if the password update itself failed.
-        // Reopen the challenge only if Firebase did not update the password.
-        if (!passwordUpdated && challengeClaimed && challenge?._id) {
-            await PasswordResetChallenge.updateOne(
-                {
-                    _id: challenge._id,
-                    deliveryStatus: "pending",
-                    passwordUpdatedAt: { $exists: false },
-                },
-                {
-                    $set: {
-                        deliveryStatus: "not_started",
-                    },
-                }
-            ).catch(() => { });
-        }
-
-        // Release the cooldown only if the password was not updated.
-        if (!passwordUpdated && cooldownReserved && user && cooldownReservation) {
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "phone",
-                cooldownReservation
-            ).catch(() => { });
-        }
-        if (cooldownReserved && user && challenge?.historyId) {
-            await releaseCooldownAfterDeliveryFailure(
-                user.uid,
-                "phone",
-                challenge.historyId
-            ).catch(() => { });
-        }
-        return res.status(500).json({
-            success: false,
-            message: passwordUpdated
-                ? "Your password may already have changed. Try signing in with your new password."
-                : "Unable to complete phone recovery right now. Please try again.",
-        });
-    }
-});
-
-
-// PHONE: retry delivery of the already-generated temporary password.
-router.post("/phone/retry-delivery", async (req, res) => {
-    const idToken =
-        typeof req.body.idToken === "string" ? req.body.idToken : "";
-
-    if (!idToken || idToken.length > 10000) {
-        return res.status(401).json({
-            success: false,
-            message: "Please verify your phone number again.",
-        });
-    }
-
-    try {
-        const decoded = await auth.verifyIdToken(idToken, true);
-
-        if (decoded.firebase?.sign_in_provider !== "phone") {
-            return res.status(403).json({
-                success: false,
-                message: "Phone verification is required.",
-            });
-        }
-
-        const user = await auth.getUser(decoded.uid);
-
-        if (!user.phoneNumber || user.phoneNumber !== decoded.phone_number) {
-            return res.status(403).json({
-                success: false,
-                message: "Verified phone number does not match this account.",
-            });
-        }
-
-        const challenge = await PasswordResetChallenge.findOne({
-            firebaseUid: user.uid,
-            resetMethod: "phone",
-            deliveryStatus: "failed",
-            temporaryPasswordEncrypted: { $ne: "" },
-        }).select(
-            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
-        );
-
-        if (!challenge || !user.email) {
-            return res.status(400).json({
-                success: false,
-                message: "No failed password delivery is available to retry.",
-            });
-        }
-
-        // Claim the failed delivery so simultaneous retries cannot run together.
-        const claimed = await PasswordResetChallenge.findOneAndUpdate(
-            {
-                _id: challenge._id,
-                deliveryStatus: "failed",
-            },
-            {
-                $set: { deliveryStatus: "pending" },
-            },
-            { returnDocument: "after" }
-        ).select(
-            "+temporaryPasswordEncrypted +temporaryPasswordIv +temporaryPasswordAuthTag"
-        );
-
-        if (!claimed) {
-            return res.status(409).json({
-                success: false,
-                message: "A delivery attempt is already in progress.",
-            });
-        }
-
-        await deliverTemporaryPassword(user, claimed);
-
-        return res.json({
-            success: true,
-            mustChangePassword: true,
-            message: "Your temporary password has been sent to your registered email.",
-        });
-    } catch (error) {
-        console.error(
-            "Temporary password delivery retry failed:",
-            error.code || error.message
-        );
-
-        return res.status(500).json({
-            success: false,
-            message: "Unable to retry delivery right now.",
-        });
-    }
-});
-
-/**
- * Complete a forced password change.
- * The authenticated user's identity comes from Firebase ID token,
- * never from a UID supplied by the client.
- */
+// COMPLETE A FORCED PASSWORD CHANGE AFTER LOGIN
 router.post("/complete-change", async (req, res) => {
     const authorization = req.headers.authorization || "";
     const idToken = authorization.startsWith("Bearer ")
@@ -1295,7 +785,6 @@ router.post("/complete-change", async (req, res) => {
     }
 
     try {
-        // Verify the token and check that it has not been revoked.
         const decoded = await auth.verifyIdToken(idToken, true);
         const user = await auth.getUser(decoded.uid);
         const claims = user.customClaims || {};
@@ -1306,20 +795,19 @@ router.post("/complete-change", async (req, res) => {
         ) {
             return res.status(403).json({
                 success: false,
-                message: "A forced password change is not required for this account.",
+                message: "A forced password change is not required.",
             });
         }
 
-        // Update the password using Firebase Admin.
         await auth.updateUser(user.uid, {
             password: newPassword,
         });
 
-        // Preserve other custom claims while removing this requirement.
         const updatedClaims = { ...claims };
         delete updatedClaims.mustChangePassword;
 
         await auth.setCustomUserClaims(user.uid, updatedClaims);
+        await auth.revokeRefreshTokens(user.uid);
 
         return res.json({
             success: true,
@@ -1333,10 +821,9 @@ router.post("/complete-change", async (req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Unable to complete the password change. Please try again.",
+            message: "Unable to complete the password change.",
         });
     }
 });
-
 
 module.exports = router;

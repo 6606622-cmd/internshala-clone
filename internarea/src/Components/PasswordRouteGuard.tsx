@@ -16,11 +16,6 @@ const PUBLIC_PATHS = [
   "/404",
   "/adminlogin",
   "/forgot-password",
-  "/internship",
-  "/job",
-  "/detailinternship/[id]",
-  "/detailjob/[id]",
-  "/detailapplication/[id]",
 ];
 
 export default function PasswordRouteGuard() {
@@ -96,8 +91,16 @@ export default function PasswordRouteGuard() {
       } catch (error) {
         console.error("Route guard authentication check failed:", error);
 
+        if (!active) return;
+
+        try {
+          await signOut(auth);
+        } catch (signOutError) {
+          console.error("Failed to sign out after authentication error:", signOutError);
+        }
+
         if (active) {
-          setChecking(false);
+          await router.replace("/");
         }
       }
     });
