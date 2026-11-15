@@ -64,25 +64,8 @@ function isChromeBrowser(browserName) {
 // --------------------------------------------------
 
 function isWithinMobileLoginHours() {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: IST_TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date());
-
-  const hour = Number(
-    parts.find((part) => part.type === "hour").value
-  );
-
-  const minute = Number(
-    parts.find((part) => part.type === "minute").value
-  );
-
-  const currentMinutes = hour * 60 + minute;
-
-  // 10:00 AM inclusive; 1:00 PM exclusive.
-  return currentMinutes >= 600 && currentMinutes < 780;
+  // TEMPORARY: Allow mobile login 24 hours a day for testing.
+  return true;
 }
 
 // --------------------------------------------------
@@ -243,6 +226,10 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
     });
 
     stage = "checking mobile login hours";
+    console.log("MOBILE LOGIN TEST:", {
+  deviceType: deviceInfo.device.type,
+  timeRestrictionDisabled: isWithinMobileLoginHours(),
+});
 
     if (
       deviceInfo.device.type === "mobile" &&
