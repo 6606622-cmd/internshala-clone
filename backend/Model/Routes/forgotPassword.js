@@ -74,7 +74,8 @@ function getRequestMetadata(req) {
 
 async function sendOtpEmail(email, otp) {
     const apiKey = process.env.BREVO_API_KEY;
-    const senderEmail = process.env.EMAIL_USER;
+       const senderEmail =
+        process.env.BREVO_OTP_SENDER || process.env.EMAIL_USER;
 
     if (!apiKey || !senderEmail) {
         throw new Error(
