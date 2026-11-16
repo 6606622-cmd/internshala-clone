@@ -10,6 +10,7 @@ const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 const sendSubscriptionInvoiceEmail = require("../../utils/sendSubscriptionInvoiceEmail");
 const PDFDocument = require("pdfkit");
+const UserProfile = require("../UserProfile");
 
 const router = express.Router();
 
