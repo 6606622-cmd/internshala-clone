@@ -21,11 +21,10 @@ const subscriptionPaymentSchema = new mongoose.Schema(
     },
 
     razorpayPaymentId: {
-      type: String,
-      default: "",
-      unique: true,
-      sparse: true,
-    },
+    type: String,
+    unique: true,
+    sparse: true,
+},
 
     amount: {
       type: Number,

@@ -95,6 +95,11 @@ const passwordResetHistorySchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    
+    failureReason: {
+    type: String,
+    default: "",
+},
   },
   { timestamps: true }
 );

@@ -52,13 +52,6 @@ function getDeviceInfo(userAgent) {
   };
 }
 
-function isChromeBrowser(browserName) {
-  return (
-    browserName === "Chrome" ||
-    browserName === "Mobile Chrome"
-  );
-}
-
 // --------------------------------------------------
 // MOBILE LOGIN TIME RESTRICTION
 // --------------------------------------------------
@@ -208,8 +201,10 @@ async function sendLoginOtpEmail(email, otp) {
 
   return response.data;
 }
+
 // --------------------------------------------------
 // START LOGIN SECURITY
+// EMAIL OTP REQUIRED FOR ALL BROWSERS AND DEVICES
 // --------------------------------------------------
 
 router.post("/start", requireFirebaseAuth, async (req, res) => {
@@ -232,85 +227,54 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       email,
       eventType: "LOGIN_ATTEMPT",
       loginStatus: "PENDING",
-      verificationMethod: "NONE",
+      verificationMethod: "EMAIL_PASSWORD",
       verificationStatus: "PENDING",
       userAgent,
       ipAddress,
       ...deviceInfo,
     });
 
-    stage = "checking mobile login hours";
-    console.log("MOBILE LOGIN TIME CHECK:", {
-  deviceType: deviceInfo.device.type,
-  allowed: isWithinMobileLoginHours(),
-});
-    if (
-      deviceInfo.device.type === "mobile" &&
-      !isWithinMobileLoginHours()
-    ) {
+    // Restrict mobile login to 10:00 AM–1:00 PM IST.
+// Desktop login remains allowed at any time.
+if (
+  deviceInfo.device.type === "mobile" &&
+  !isWithinMobileLoginHours()
+) {
+  activity.eventType = "LOGIN_BLOCKED";
+  activity.loginStatus = "BLOCKED";
+  activity.verificationStatus = "FAILED";
+  activity.failureReason =
+    "Mobile login is allowed only between 10:00 AM and 1:00 PM IST.";
+
+  await activity.save();
+
+  return res.status(403).json({
+    success: false,
+    code: "MOBILE_LOGIN_TIME_RESTRICTED",
+    message:
+      "Mobile login is available only between 10:00 AM and 1:00 PM IST.",
+  });
+}
+
+    // A registered email is mandatory for OTP verification.
+    if (!email) {
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
       activity.verificationStatus = "FAILED";
       activity.failureReason =
-        "Mobile login is permitted only between 10:00 AM and 1:00 PM IST.";
+        "No registered email is available for verification.";
 
-      stage = "saving mobile login restriction";
-      await activity.save();
-
-      return res.status(403).json({
-        success: false,
-        code: "MOBILE_LOGIN_TIME_RESTRICTED",
-        message:
-          "Mobile login is allowed only between 10:00 AM and 1:00 PM IST.",
-      });
-    }
-
-    // Non-Chrome browsers do not require email OTP.
-    if (!isChromeBrowser(deviceInfo.browser.name)) {
-      stage = "creating non-Chrome login session";
-
-      const sessionCredentials = await createLoginSession({
-        uid,
-        email,
-        activity,
-        userAgent,
-        ipAddress,
-      });
-
-      activity.eventType = "LOGIN_SUCCESS";
-      activity.loginStatus = "SUCCESS";
-      activity.verificationStatus = "NOT_REQUIRED";
-      activity.verificationMethod = "NONE";
-
-      stage = "saving non-Chrome login success";
-      await activity.save();
-
-      return res.json({
-        success: true,
-        otpRequired: false,
-        ...sessionCredentials,
-        activityId: activity._id,
-        message: "Login successful.",
-      });
-    }
-
-    if (!email) {
-      activity.eventType = "LOGIN_BLOCKED";
-      activity.loginStatus = "BLOCKED";
-      activity.failureReason =
-        "No registered email is available.";
-
-      stage = "saving missing email status";
       await activity.save();
 
       return res.status(400).json({
         success: false,
+        code: "REGISTERED_EMAIL_REQUIRED",
         message:
-          "A registered email is required for Chrome verification.",
+          "A registered email is required for login verification.",
       });
     }
 
-    stage = "deleting old OTP challenges";
+    stage = "deleting previous OTP challenges";
 
     await LoginOtp.deleteMany({
       firebaseUid: uid,
@@ -334,6 +298,7 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
         Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000
       ),
     });
+
     try {
       stage = "sending OTP through Brevo API";
 
@@ -383,7 +348,8 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       success: true,
       otpRequired: true,
       activityId: activity._id,
-      message: "Verification code sent to your registered email.",
+      message:
+        "Verification code sent to your registered email.",
     });
 
   } catch (error) {
@@ -395,6 +361,23 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
       stack: error.stack,
       response: error.response?.data,
     });
+
+    if (activity) {
+      try {
+        activity.eventType = "LOGIN_BLOCKED";
+        activity.loginStatus = "BLOCKED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason =
+          "Unable to start login verification.";
+
+        await activity.save();
+      } catch (saveError) {
+        console.error(
+          "FAILED TO SAVE LOGIN START ERROR:",
+          saveError.message
+        );
+      }
+    }
 
     return res.status(500).json({
       success: false,

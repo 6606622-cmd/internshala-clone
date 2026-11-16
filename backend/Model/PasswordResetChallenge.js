@@ -6,12 +6,14 @@ const passwordResetChallengeSchema = new mongoose.Schema(
         firebaseUid: {
             type: String,
             required: true,
-            unique: true,
+            trim: true,
         },
 
         email: {
             type: String,
             default: "",
+            trim: true,
+            lowercase: true,
         },
 
         resetMethod: {
@@ -35,6 +37,7 @@ const passwordResetChallengeSchema = new mongoose.Schema(
             type: Number,
             default: 0,
         },
+
         otpResendCount: {
             type: Number,
             default: 0,
@@ -62,7 +65,6 @@ const passwordResetChallengeSchema = new mongoose.Schema(
             required: true,
         },
 
-        // Temporary-password delivery tracking
         temporaryPasswordEncrypted: {
             type: String,
             default: "",
@@ -92,12 +94,24 @@ const passwordResetChallengeSchema = new mongoose.Schema(
             default: 0,
         },
 
+        resendReservationId: {
+            type: String,
+            default: "",
+            select: false,
+        },
+
         passwordUpdatedAt: {
             type: Date,
             default: null,
         },
     },
     { timestamps: true }
+);
+
+// One separate recovery challenge per account and recovery method.
+passwordResetChallengeSchema.index(
+    { firebaseUid: 1, resetMethod: 1 },
+    { unique: true }
 );
 
 module.exports = mongoose.model(

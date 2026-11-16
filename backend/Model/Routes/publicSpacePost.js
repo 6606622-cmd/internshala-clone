@@ -275,6 +275,7 @@ router.post("/", requireFirebaseAuth, requireVerifiedLogin, async (req, res) => 
       if (postsToday >= dailyLimit) {
         return res.status(429).json({
           success: false,
+          code: "DAILY_POST_LIMIT_REACHED",
           message: "You have reached your daily posting limit.",
           friendCount,
           dailyLimit,

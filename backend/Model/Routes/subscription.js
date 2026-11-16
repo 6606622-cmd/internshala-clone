@@ -9,6 +9,7 @@ const SubscriptionPayment = require("../SubscriptionPayment");
 const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 const sendSubscriptionInvoiceEmail = require("../../utils/sendSubscriptionInvoiceEmail");
+const PDFDocument = require("pdfkit");
 
 const router = express.Router();
 
@@ -46,8 +47,21 @@ const getISTMonth = (date = new Date()) => {
     return `${year}-${month}`;
 };
 
-// TEMPORARY TESTING: Allow subscription payments 24/7.
-const isPaymentWindowOpen = () => true;
+const isPaymentWindowOpen = () => {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(new Date());
+
+    const hour = Number(parts.find((p) => p.type === "hour").value);
+    const minute = Number(parts.find((p) => p.type === "minute").value);
+
+    const currentMinutes = hour * 60 + minute;
+
+    return currentMinutes >= 300 && currentMinutes <= 705;
+};
 
 const addOneMonth = (date) => {
     const result = new Date(date);
@@ -135,50 +149,79 @@ const getOrCreateSubscription = async (firebaseUid) => {
     return subscription;
 };
 
-// GET CURRENT SUBSCRIPTION
+
+// Get current user's profile. Automatically create one if missing.
 router.get("/me", async (req, res) => {
     try {
-        const subscription = await getOrCreateSubscription(
-            req.firebaseUser.uid
-        );
+      const uid = req.firebaseUser.uid;
 
-        const remaining =
-            subscription.monthlyLimit === -1
-                ? -1
-                : Math.max(
-                    0,
-                    subscription.monthlyLimit - subscription.applicationsUsed
-                );
+      let profile = await UserProfile.findOne({
+        firebaseUid: uid,
+      });
 
-        return res.json({
-            success: true,
-            subscription: {
-                plan: subscription.plan,
-                status: subscription.status,
-                monthlyLimit: subscription.monthlyLimit,
-                applicationsUsed: subscription.applicationsUsed,
-                remainingApplications: remaining,
-                quotaMonth: subscription.quotaMonth,
-                startedAt: subscription.startedAt,
-                expiresAt: subscription.expiresAt,
-                cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-                pendingPlan: subscription.pendingPlan,
-            },
-            plans: {
-                free: { amount: 0, limit: 1 },
-                bronze: { amount: 100, limit: 3 },
-                silver: { amount: 300, limit: 5 },
-                gold: { amount: 1000, limit: -1 },
-            },
-        });
+      if (!profile) {
+        const firebaseUser = await firebaseAuth.getUser(uid);
+
+        const displayName =
+          firebaseUser.displayName ||
+          (firebaseUser.email
+            ? firebaseUser.email.split("@")[0]
+            : "Internarea User");
+
+        const photoURL = firebaseUser.photoURL || "";
+
+        // Generate a unique username and safely handle concurrent requests.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const username = await generateUniqueUsername(
+            displayName,
+            uid
+          );
+
+          try {
+            profile = await UserProfile.create({
+              firebaseUid: uid,
+              username,
+              displayName,
+              photoURL,
+            });
+
+            break;
+          } catch (createError) {
+            if (createError.code !== 11000) {
+              throw createError;
+            }
+
+            // Another request may have created this user's profile.
+            profile = await UserProfile.findOne({
+              firebaseUid: uid,
+            });
+
+            if (profile) break;
+          }
+        }
+
+        if (!profile) {
+          throw new Error(
+            "Could not generate a unique username. Please try again."
+          );
+        }
+      }
+
+      return res.json({
+        success: true,
+        profile,
+        needsUsername: false,
+      });
     } catch (error) {
-        console.error("SUBSCRIPTION PROFILE ERROR:", error.message);
-        return res.status(500).json({
-            success: false,
-            message: "Could not load subscription.",
-        });
+      console.error("Get/create user profile error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Could not load or create your profile.",
+      });
     }
-});
+  }
+);
 
 // CREATE RAZORPAY ORDER
 router.post("/create-order", async (req, res) => {
@@ -464,6 +507,172 @@ router.get("/payments", async (req, res) => {
         });
     }
 });
+
+
+// DOWNLOAD SUBSCRIPTION INVOICE PDF
+router.get("/invoice/:paymentId", async (req, res) => {
+    try {
+        const payment = await SubscriptionPayment.findOne({
+            _id: req.params.paymentId,
+            firebaseUid: req.firebaseUser.uid,
+            status: "paid",
+        }).lean();
+
+        if (!payment) {
+            return res.status(404).json({
+                success: false,
+                message: "Paid invoice not found.",
+            });
+        }
+
+        if (
+            !payment.invoiceNumber ||
+            !payment.razorpayPaymentId ||
+            !payment.paidAt
+        ) {
+            return res.status(404).json({
+                success: false,
+                message: "Invoice details are incomplete.",
+            });
+        }
+
+        const doc = new PDFDocument({
+            size: "A4",
+            margin: 50,
+            info: {
+                Title: `InternArea Invoice ${payment.invoiceNumber}`,
+                Author: "InternArea",
+            },
+        });
+
+        const filename = `InternArea-Invoice-${payment.invoiceNumber}.pdf`;
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${filename}"`
+        );
+
+        doc.pipe(res);
+
+        const formatDate = (date) =>
+            date
+                ? new Date(date).toLocaleDateString("en-IN", {
+                    day: "2-digit",
+                    month: "long",
+                    year: "numeric",
+                    timeZone: "Asia/Kolkata",
+                })
+                : "Not available";
+
+        const formatAmount = (amount) =>
+            new Intl.NumberFormat("en-IN", {
+                style: "currency",
+                currency: payment.currency || "INR",
+                minimumFractionDigits: 2,
+            }).format(amount / 100);
+
+        // Invoice heading
+        doc
+            .fillColor("#2563eb")
+            .fontSize(25)
+            .font("Helvetica-Bold")
+            .text("InternArea", { align: "center" });
+
+        doc
+            .fillColor("#222222")
+            .fontSize(17)
+            .text("SUBSCRIPTION INVOICE", {
+                align: "center",
+            });
+
+        doc.moveDown(1.5);
+
+        doc
+            .fontSize(11)
+            .font("Helvetica")
+            .text(`Invoice Number: ${payment.invoiceNumber}`)
+            .text(`Invoice Date: ${formatDate(payment.paidAt)}`)
+            .text(`Payment Status: PAID`);
+
+        doc.moveDown(1.5);
+
+        doc
+            .font("Helvetica-Bold")
+            .fontSize(13)
+            .text("Payment Details");
+
+        doc.moveDown(0.5);
+
+        const rows = [
+            ["Subscription Plan", payment.plan.toUpperCase()],
+            ["Amount Paid", formatAmount(payment.amount)],
+            ["Currency", payment.currency || "INR"],
+            ["Razorpay Payment ID", payment.razorpayPaymentId],
+            ["Razorpay Order ID", payment.razorpayOrderId],
+            ["Payment Date", formatDate(payment.paidAt)],
+            ["Subscription Valid From", formatDate(payment.validFrom)],
+            ["Subscription Valid Until", formatDate(payment.validUntil)],
+        ];
+
+        const left = 50;
+        const right = 545;
+        let y = doc.y;
+
+        rows.forEach(([label, value]) => {
+            doc
+                .font("Helvetica-Bold")
+                .fontSize(10)
+                .fillColor("#444444")
+                .text(label, left, y, { width: 190 });
+
+            doc
+                .font("Helvetica")
+                .fillColor("#222222")
+                .text(String(value), 250, y, { width: 295 });
+
+            y += 28;
+
+            doc
+                .moveTo(left, y - 8)
+                .lineTo(right, y - 8)
+                .strokeColor("#dddddd")
+                .stroke();
+        });
+
+        doc.y = y + 15;
+
+        doc
+            .fontSize(10)
+            .fillColor("#555555")
+            .text(
+                "This invoice confirms successful payment for the InternArea subscription listed above."
+            );
+
+        doc.moveDown(2);
+
+        doc
+            .font("Helvetica-Bold")
+            .fillColor("#2563eb")
+            .text("Thank you for choosing InternArea.", {
+                align: "center",
+            });
+
+        doc.end();
+    } catch (error) {
+        console.error("INVOICE DOWNLOAD ERROR:", error.message);
+
+        if (!res.headersSent) {
+            return res.status(500).json({
+                success: false,
+                message: "Unable to generate invoice PDF.",
+            });
+        }
+
+        res.destroy(error);
+    }
+});
+
 
 // CANCEL AT THE END OF THE CURRENT BILLING PERIOD
 router.post("/cancel", async (req, res) => {

@@ -54,9 +54,14 @@ const publicSpacePostSchema = new mongoose.Schema(
       enum: ["public", "friends"],
       default: "public",
     },
-
     hashtags: [{ type: String, lowercase: true, trim: true }],
     mentions: [{ type: String, trim: true }],
+
+    mentionedUserUids: {
+      type: [String],
+      default: [],
+      index: true,
+    },
 
     likesCount: { type: Number, default: 0, min: 0 },
     commentsCount: { type: Number, default: 0, min: 0 },

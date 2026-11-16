@@ -28,5 +28,8 @@
     "razorpay": "^2.9.8",
     "react-toastify": "^11.1.0",
     "ua-parser-js": "^2.0.10"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }
