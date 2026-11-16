@@ -151,78 +151,53 @@ const getOrCreateSubscription = async (firebaseUid) => {
 };
 
 
-// Get current user's profile. Automatically create one if missing.
+
+// Get current user's subscription
 router.get("/me", async (req, res) => {
-    try {
-      const uid = req.firebaseUser.uid;
+  try {
+    const uid = req.firebaseUser.uid;
 
-      let profile = await UserProfile.findOne({
+    let subscription = await Subscription.findOne({
+      firebaseUid: uid,
+    });
+
+    // Create a default Free plan if no subscription exists.
+    if (!subscription) {
+      subscription = await Subscription.create({
         firebaseUid: uid,
-      });
-
-      if (!profile) {
-        const firebaseUser = await firebaseAuth.getUser(uid);
-
-        const displayName =
-          firebaseUser.displayName ||
-          (firebaseUser.email
-            ? firebaseUser.email.split("@")[0]
-            : "Internarea User");
-
-        const photoURL = firebaseUser.photoURL || "";
-
-        // Generate a unique username and safely handle concurrent requests.
-        for (let attempt = 0; attempt < 5; attempt++) {
-          const username = await generateUniqueUsername(
-            displayName,
-            uid
-          );
-
-          try {
-            profile = await UserProfile.create({
-              firebaseUid: uid,
-              username,
-              displayName,
-              photoURL,
-            });
-
-            break;
-          } catch (createError) {
-            if (createError.code !== 11000) {
-              throw createError;
-            }
-
-            // Another request may have created this user's profile.
-            profile = await UserProfile.findOne({
-              firebaseUid: uid,
-            });
-
-            if (profile) break;
-          }
-        }
-
-        if (!profile) {
-          throw new Error(
-            "Could not generate a unique username. Please try again."
-          );
-        }
-      }
-
-      return res.json({
-        success: true,
-        profile,
-        needsUsername: false,
-      });
-    } catch (error) {
-      console.error("Get/create user profile error:", error.message);
-
-      return res.status(500).json({
-        success: false,
-        message: "Could not load or create your profile.",
+        plan: "free",
+        status: "active",
+        monthlyLimit: 1,
+        applicationsUsed: 0,
+        quotaMonth: new Date().toISOString().slice(0, 7),
       });
     }
+
+    const remainingApplications =
+      subscription.monthlyLimit === -1
+        ? -1
+        : Math.max(
+            0,
+            subscription.monthlyLimit - subscription.applicationsUsed
+          );
+
+    return res.json({
+      success: true,
+      subscription: {
+        ...subscription.toObject(),
+        remainingApplications,
+      },
+    });
+  } catch (error) {
+    console.error("Get subscription error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not load your subscription.",
+    });
   }
-);
+});
+
 
 // CREATE RAZORPAY ORDER
 router.post("/create-order", async (req, res) => {
