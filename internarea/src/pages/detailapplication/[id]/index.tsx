@@ -93,7 +93,7 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4">
-      <div className="max-w-5xl mx-auto">
+      <div className="w-full max-w-none mx-auto px-5 sm:px-8 lg:px-12">
         <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
 
           {/* Header */}

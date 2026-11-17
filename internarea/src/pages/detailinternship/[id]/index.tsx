@@ -452,7 +452,7 @@ const index = () => {
   ];
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
+    <div className="w-full max-w-none mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 py-8">
       <div className="bg-white rounded-lg shadow-lg overflow-hidden">
 
         {/* Header Section */}

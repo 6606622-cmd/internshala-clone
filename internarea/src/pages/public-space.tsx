@@ -2,11 +2,13 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
 import { auth } from "../firebase/firebase";
 import NotificationBell from "../Components/NotificationBell";
+import { useLanguage } from "../../context/LanguageContext";
 
 const API_URL = "https://internshala-clone-a0st.onrender.com/api";
 
@@ -55,6 +57,13 @@ type PostComment = {
   username?: string;
 };
 
+type MentionUser = {
+  firebaseUid: string;
+  username: string;
+  displayName?: string;
+  photoURL?: string;
+};
+
 type REPORT_REASON =
   | "spam"
   | "harassment"
@@ -62,20 +71,11 @@ type REPORT_REASON =
   | "misinformation"
   | "other";
 
-const REPORT_REASONS: { value: REPORT_REASON; label: string }[] = [
-  { value: "spam", label: "Spam" },
-  { value: "harassment", label: "Harassment" },
-  { value: "inappropriate", label: "Inappropriate content" },
-  { value: "misinformation", label: "Misinformation" },
-  { value: "other", label: "Other" },
-];
-
 type FriendEntry = {
   friendshipId: string;
   uid: string;
   since?: string;
 };
-
 
 type UploadedVideo = {
   type: "video";
@@ -176,7 +176,9 @@ async function apiRequest<T = Record<string, unknown>>(
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok || data.success === false) {
-    throw new Error(data.message || `Request failed with status ${response.status}.`);
+    throw new Error(
+      data.message || `Request failed with status ${response.status}.`
+    );
   }
 
   return data as T;
@@ -189,6 +191,8 @@ function PublicSpaceVideo({
   url: string;
   onFullscreen: (url: string, type: "youtube" | "drive" | "direct") => void;
 }) {
+  const { t } = useLanguage();
+
   let source: VideoSource;
 
   try {
@@ -196,7 +200,7 @@ function PublicSpaceVideo({
   } catch {
     return (
       <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">
-        This video link is not valid.
+        {t.invalidVideoLink}
       </p>
     );
   }
@@ -220,7 +224,7 @@ function PublicSpaceVideo({
           preload="metadata"
           className="max-h-[500px] w-full object-contain"
         >
-          Your browser does not support video playback.
+          {t.browserVideoUnsupported}
         </video>
       )}
 
@@ -234,16 +238,124 @@ function PublicSpaceVideo({
         }
         className="absolute right-3 top-3 rounded-lg bg-black/70 px-3 py-2 text-sm font-semibold text-white"
       >
-        Fullscreen
+        {t.fullscreen}
       </button>
     </div>
   );
 }
 
+function PostText({
+  text,
+  onHashtagClick,
+  onMentionClick,
+}: {
+  text: string;
+  onHashtagClick: (tag: string) => void;
+  onMentionClick: (username: string) => void;
+}) {
+  return (
+    <p className="whitespace-pre-wrap break-words leading-7">
+      {renderPublicText(text, onHashtagClick, onMentionClick)}
+    </p>
+  );
+}
+
+function renderPublicText(
+  value: string,
+  onHashtagClick: (tag: string) => void,
+  onMentionClick: (username: string) => void
+) {
+  const parts = value.split(/(#[\p{L}\p{N}_]+|@[\p{L}\p{N}_]+)/gu);
+
+  return parts.map((part, index) => {
+    if (part.startsWith("#")) {
+      return (
+        <button
+          key={index}
+          type="button"
+          onClick={() => onHashtagClick(part.slice(1))}
+          className="font-semibold text-indigo-600 hover:underline"
+        >
+          {part}
+        </button>
+      );
+    }
+
+    if (part.startsWith("@")) {
+      return (
+        <button
+          key={index}
+          type="button"
+          onClick={() => onMentionClick(part.slice(1))}
+          className="font-semibold text-sky-700 hover:underline"
+        >
+          {part}
+        </button>
+      );
+    }
+
+    return <span key={index}>{part}</span>;
+  });
+}
 
 export default function PublicSpacePage() {
+  const { t } = useLanguage();
+
+  // Report labels are kept inside the component so they use the active language.
+  const REPORT_REASONS: { value: REPORT_REASON; label: string }[] = [
+    { value: "spam", label: t.spam },
+    { value: "harassment", label: t.harassment },
+    { value: "inappropriate", label: t.inappropriateContent },
+    { value: "misinformation", label: t.misinformation },
+    { value: "other", label: t.other },
+  ];
+
+  // Translate only known local fallback errors. Backend-provided messages
+  // and user-generated content are deliberately preserved.
+  const localizeError = (message: string): string => {
+    const errorMessages: Record<string, string> = {
+      "Please sign in to InternArea first.": t.signInFirst,
+      "You have reached your daily posting limit.": t.postLimitReached,
+      "Login session is missing. Please sign in again.": t.missingLoginSession,
+      "Could not load posts.": t.couldNotLoadPosts,
+      "Enter a valid hashtag.": t.validHashtagRequired,
+      "Could not search hashtags.": t.couldNotSearchHashtags,
+      "Could not load friendship information.": t.couldNotLoadFriendships,
+      "This YouTube video link is invalid.": t.invalidYoutubeLink,
+      "This Google Drive video link is invalid.": t.invalidDriveLink,
+      "Video links must use HTTPS.": t.videoMustUseHttps,
+      "Choose an MP4, WebM, MOV or OGG video.": t.chooseSupportedVideo,
+      "Video size must not exceed 50 MB.": t.videoSizeLimit,
+      "Could not search users.": t.couldNotSearchUsers,
+      "Add text, a media URL, or select a video.": t.postContentRequired,
+      "Media URLs must use HTTPS.": t.mediaMustUseHttps,
+      "Could not publish your post.": t.couldNotPublishPost,
+      "Could not send friend request.": t.couldNotSendFriendRequest,
+      "Could not respond to friend request.": t.couldNotRespondFriendRequest,
+      "Are you sure you want to remove this friend?": t.confirmRemoveFriend,
+      "Could not remove friend.": t.couldNotRemoveFriend,
+      "Action failed.": t.actionFailed,
+      "Could not load comments.": t.couldNotLoadComments,
+      "Could not add comment.": t.couldNotAddComment,
+      "Could not delete comment.": t.couldNotDeleteComment,
+      "Could not share this post on this device.": t.couldNotSharePost,
+    };
+
+    return errorMessages[message] || message;
+  };
+
   const [posts, setPosts] = useState<PublicPost[]>([]);
+  const [hashtagSearch, setHashtagSearch] = useState("");
+  const [activeHashtag, setActiveHashtag] = useState("");
+  const [hashtagLoading, setHashtagLoading] = useState(false);
   const [text, setText] = useState("");
+  const postTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionStart, setMentionStart] = useState(-1);
+  const [mentionUsers, setMentionUsers] = useState<MentionUser[]>([]);
+  const [mentionLoading, setMentionLoading] = useState(false);
+  const [mentionError, setMentionError] = useState("");
   const [privacy, setPrivacy] = useState<"public" | "friends">("public");
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaType, setMediaType] = useState<"image" | "video">("image");
@@ -290,7 +402,6 @@ export default function PublicSpacePage() {
     type: "youtube" | "drive" | "direct";
   } | null>(null);
 
-
   const currentUid = auth.currentUser?.uid;
 
   const loadPosts = useCallback(async () => {
@@ -300,6 +411,15 @@ export default function PublicSpacePage() {
     try {
       const data = await apiRequest<{ posts?: PublicPost[] }>("/public-space/posts");
       const loadedPosts = data.posts || [];
+
+      console.table(
+        loadedPosts.map((post) => ({
+          authorUid: post.authorUid,
+          usernameFromAPI: post.authorProfile?.username,
+          displayName: post.authorProfile?.displayName,
+        }))
+      );
+
       setPosts(loadedPosts);
       setLikedPosts({});
       setSavedPosts({});
@@ -334,11 +454,87 @@ export default function PublicSpacePage() {
         });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load posts.");
+      setError(
+        localizeError(
+          err instanceof Error ? err.message : "Could not load posts."
+        )
+      );
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const searchHashtag = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const tag = hashtagSearch.trim().replace(/^#/, "").toLowerCase();
+
+    if (!/^[\p{L}\p{N}_]{1,50}$/u.test(tag)) {
+      setError(t.validHashtagRequired);
+      return;
+    }
+
+    setHashtagLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const data = await apiRequest<{ posts?: PublicPost[] }>(
+        `/public-space/posts/hashtag/${encodeURIComponent(tag)}`
+      );
+
+      const foundPosts = data.posts || [];
+
+      setPosts(foundPosts);
+      setActiveHashtag(tag);
+      setLikedPosts({});
+      setSavedPosts({});
+
+      for (let i = 0; i < foundPosts.length; i += 100) {
+        const batch = foundPosts.slice(i, i + 100);
+        if (!batch.length) continue;
+
+        const query = new URLSearchParams({
+          postIds: batch.map((post) => post._id).join(","),
+        });
+
+        const status = await apiRequest<{
+          likedPostIds?: string[];
+          savedPostIds?: string[];
+        }>(`/public-space/interactions/status?${query}`);
+
+        setLikedPosts((prev) => {
+          const next = { ...prev };
+          batch.forEach((post) => {
+            next[post._id] = (status.likedPostIds || []).includes(post._id);
+          });
+          return next;
+        });
+
+        setSavedPosts((prev) => {
+          const next = { ...prev };
+          batch.forEach((post) => {
+            next[post._id] = (status.savedPostIds || []).includes(post._id);
+          });
+          return next;
+        });
+      }
+    } catch (err) {
+      setError(
+        localizeError(
+          err instanceof Error ? err.message : "Could not search hashtags."
+        )
+      );
+    } finally {
+      setHashtagLoading(false);
+    }
+  };
+
+  const showAllPosts = () => {
+    setHashtagSearch("");
+    setActiveHashtag("");
+    void loadPosts();
+  };
 
   const loadFriendships = useCallback(async () => {
     setFriendshipsLoading(true);
@@ -356,7 +552,11 @@ export default function PublicSpacePage() {
       setIncomingRequests(requestsData.requests || []);
     } catch (err) {
       setFriendshipError(
-        err instanceof Error ? err.message : "Could not load friendship information."
+        localizeError(
+          err instanceof Error
+            ? err.message
+            : "Could not load friendship information."
+        )
       );
     } finally {
       setFriendshipsLoading(false);
@@ -364,8 +564,39 @@ export default function PublicSpacePage() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    let active = true;
+
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!active) return;
+
       if (user) {
+        try {
+          const data = await apiRequest<{
+            success: boolean;
+            profile: {
+              firebaseUid: string;
+              username: string;
+              displayName: string;
+              photoURL: string;
+            } | null;
+            needsUsername?: boolean;
+          }>("/user-profile/me");
+
+          if (!active) return;
+
+          console.log("User profile ready:", data.profile);
+
+          if (!data.profile) {
+            console.error("Profile was not created by the backend.");
+          }
+        } catch (error) {
+          if (active) {
+            console.error("Profile initialization failed:", error);
+          }
+        }
+
+        if (!active) return;
+
         void loadPosts();
         void loadFriendships();
       } else {
@@ -378,13 +609,15 @@ export default function PublicSpacePage() {
         setOpenComments({});
         setLoading(false);
         setFriendshipsLoading(false);
-        setError("Please sign in to view Public Space.");
+        setError(t.signInToViewPublicSpace);
       }
     });
 
-    return unsubscribe;
-  }, [loadPosts, loadFriendships]);
-
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [loadPosts, loadFriendships, t.signInToViewPublicSpace]);
 
   const uploadVideo = async (file: File): Promise<UploadedVideo> => {
     const allowedTypes = [
@@ -428,7 +661,94 @@ export default function PublicSpacePage() {
     }
   };
 
+  const searchMentionUsers = useCallback(async (query: string) => {
+    if (query.length < 1) {
+      setMentionUsers([]);
+      setMentionLoading(false);
+      return;
+    }
 
+    setMentionLoading(true);
+    setMentionError("");
+
+    try {
+      const data = await apiRequest<{ users?: MentionUser[] }>(
+        `/user-profile/search?q=${encodeURIComponent(query)}`
+      );
+
+      setMentionUsers(data.users || []);
+    } catch (err) {
+      setMentionUsers([]);
+      setMentionError(
+        localizeError(
+          err instanceof Error ? err.message : "Could not search users."
+        )
+      );
+    } finally {
+      setMentionLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mentionQuery === null) {
+      setMentionUsers([]);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void searchMentionUsers(mentionQuery);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [mentionQuery, searchMentionUsers]);
+
+  const handlePostTextChange = (
+    event: React.ChangeEvent<HTMLTextAreaElement>
+  ) => {
+    const value = event.target.value;
+    const cursor = event.target.selectionStart;
+
+    setText(value);
+
+    const beforeCursor = value.slice(0, cursor);
+    const match = beforeCursor.match(/(^|[\s(])@([a-zA-Z0-9_]{0,30})$/);
+
+    if (match) {
+      setMentionStart(cursor - match[2].length - 1);
+      setMentionQuery(match[2].toLowerCase());
+    } else {
+      setMentionQuery(null);
+      setMentionStart(-1);
+      setMentionUsers([]);
+      setMentionError("");
+    }
+  };
+
+  const selectMentionUser = (user: MentionUser) => {
+    if (mentionStart < 0) return;
+
+    const before = text.slice(0, mentionStart);
+    const cursor = postTextareaRef.current?.selectionStart ?? text.length;
+
+    // Replace the currently typed @username fragment.
+    const afterMatch = text.slice(cursor);
+    const nextText = `${before}@${user.username} ${afterMatch}`;
+
+    setText(nextText);
+    setMentionQuery(null);
+    setMentionStart(-1);
+    setMentionUsers([]);
+    setMentionError("");
+
+    requestAnimationFrame(() => {
+      const textarea = postTextareaRef.current;
+      if (!textarea) return;
+
+      const nextCursor = before.length + user.username.length + 2;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
 
   const createPost = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -438,7 +758,7 @@ export default function PublicSpacePage() {
     const cleanUrl = mediaUrl.trim();
 
     if (!cleanText && !cleanUrl && !videoFile) {
-      setError("Add text, a media URL, or select a video.");
+      setError(t.postContentRequired);
       return;
     }
 
@@ -484,17 +804,20 @@ export default function PublicSpacePage() {
       setMediaType("image");
       setPrivacy("public");
 
-      setNotice("Your post was published successfully.");
+      setNotice(t.postPublished);
       await loadPosts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not publish your post.");
+      setError(
+        localizeError(
+          err instanceof Error ? err.message : "Could not publish your post."
+        )
+      );
     } finally {
       setPublishing(false);
       setUploadingVideo(false);
       setUploadProgress(0);
     }
   };
-
 
   const sendFriendRequest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -512,11 +835,13 @@ export default function PublicSpacePage() {
       );
 
       setTargetUid("");
-      setFriendshipNotice(data.message || "Friend request sent successfully.");
+      setFriendshipNotice(data.message || t.friendRequestSent);
       await loadFriendships();
     } catch (err) {
       setFriendshipError(
-        err instanceof Error ? err.message : "Could not send friend request."
+        localizeError(
+          err instanceof Error ? err.message : "Could not send friend request."
+        )
       );
     } finally {
       setSendingRequest(false);
@@ -542,22 +867,27 @@ export default function PublicSpacePage() {
       );
 
       setFriendshipNotice(
-        data.message || (action === "accept" ? "Friend request accepted." : "Request rejected.")
+        data.message ||
+          (action === "accept" ? t.friendRequestAccepted : t.friendRequestRejected)
       );
+
       await loadFriendships();
       await loadPosts();
     } catch (err) {
       setFriendshipError(
-        err instanceof Error ? err.message : "Could not respond to friend request."
+        localizeError(
+          err instanceof Error
+            ? err.message
+            : "Could not respond to friend request."
+        )
       );
     } finally {
       setRespondingId("");
     }
   };
 
-
   const unfollowFriend = async (friend: FriendEntry) => {
-    if (!window.confirm("Are you sure you want to remove this friend?")) {
+    if (!window.confirm(t.confirmRemoveFriend)) {
       return;
     }
 
@@ -577,15 +907,16 @@ export default function PublicSpacePage() {
         )
       );
 
-      setFriendshipNotice(data.message || "Friend removed successfully.");
+      setFriendshipNotice(data.message || t.friendRemoved);
       await loadPosts();
     } catch (err) {
       setFriendshipError(
-        err instanceof Error ? err.message : "Could not remove friend."
+        localizeError(
+          err instanceof Error ? err.message : "Could not remove friend."
+        )
       );
     }
   };
-
 
   const runPostAction = async (postId: string, action: () => Promise<void>) => {
     if (busyActions[postId]) return;
@@ -599,7 +930,9 @@ export default function PublicSpacePage() {
     } catch (err) {
       setActionErrors((prev) => ({
         ...prev,
-        [postId]: err instanceof Error ? err.message : "Action failed.",
+        [postId]: localizeError(
+          err instanceof Error ? err.message : "Action failed."
+        ),
       }));
     } finally {
       setBusyActions((prev) => ({ ...prev, [postId]: false }));
@@ -632,7 +965,7 @@ export default function PublicSpacePage() {
       setSavedPosts((prev) => ({ ...prev, [post._id]: data.saved }));
       setActionNotices((prev) => ({
         ...prev,
-        [post._id]: data.saved ? "Post saved." : "Post removed from saved posts.",
+        [post._id]: data.saved ? t.postSaved : t.postRemovedFromSaved,
       }));
     });
   };
@@ -645,11 +978,17 @@ export default function PublicSpacePage() {
       const data = await apiRequest<{ comments?: PostComment[] }>(
         `/public-space/interactions/${postId}/comments`
       );
-      setCommentsByPost((prev) => ({ ...prev, [postId]: data.comments || [] }));
+
+      setCommentsByPost((prev) => ({
+        ...prev,
+        [postId]: data.comments || [],
+      }));
     } catch (err) {
       setActionErrors((prev) => ({
         ...prev,
-        [postId]: err instanceof Error ? err.message : "Could not load comments.",
+        [postId]: localizeError(
+          err instanceof Error ? err.message : "Could not load comments."
+        ),
       }));
     } finally {
       setCommentsLoading((prev) => ({ ...prev, [postId]: false }));
@@ -687,6 +1026,7 @@ export default function PublicSpacePage() {
         ...prev,
         [post._id]: [...(prev[post._id] || []), data.comment],
       }));
+
       setPosts((prev) =>
         prev.map((item) =>
           item._id === post._id
@@ -697,7 +1037,9 @@ export default function PublicSpacePage() {
     } catch (err) {
       setActionErrors((prev) => ({
         ...prev,
-        [post._id]: err instanceof Error ? err.message : "Could not add comment.",
+        [post._id]: localizeError(
+          err instanceof Error ? err.message : "Could not add comment."
+        ),
       }));
     } finally {
       setCommentSubmitting((prev) => ({ ...prev, [post._id]: false }));
@@ -716,8 +1058,11 @@ export default function PublicSpacePage() {
 
       setCommentsByPost((prev) => ({
         ...prev,
-        [postId]: (prev[postId] || []).filter((comment) => comment.id !== commentId),
+        [postId]: (prev[postId] || []).filter(
+          (comment) => comment.id !== commentId
+        ),
       }));
+
       setPosts((prev) =>
         prev.map((item) =>
           item._id === postId
@@ -728,7 +1073,9 @@ export default function PublicSpacePage() {
     } catch (err) {
       setActionErrors((prev) => ({
         ...prev,
-        [postId]: err instanceof Error ? err.message : "Could not delete comment.",
+        [postId]: localizeError(
+          err instanceof Error ? err.message : "Could not delete comment."
+        ),
       }));
     } finally {
       setDeletingCommentId("");
@@ -738,6 +1085,7 @@ export default function PublicSpacePage() {
   const reportPost = async (post: PublicPost) => {
     await runPostAction(post._id, async () => {
       const reason = reportReasons[post._id] || "spam";
+
       const data = await apiRequest<{ message?: string }>(
         `/public-space/interactions/${post._id}/report`,
         {
@@ -745,9 +1093,10 @@ export default function PublicSpacePage() {
           body: JSON.stringify({ reason }),
         }
       );
+
       setActionNotices((prev) => ({
         ...prev,
-        [post._id]: data.message || "Report submitted for review.",
+        [post._id]: data.message || t.reportSubmittedForReview,
       }));
     });
   };
@@ -775,42 +1124,58 @@ export default function PublicSpacePage() {
       });
 
       setEditingPostId(null);
-      setActionNotices((prev) => ({ ...prev, [post._id]: "Post updated successfully." }));
+      setActionNotices((prev) => ({
+        ...prev,
+        [post._id]: t.postUpdatedSuccessfully,
+      }));
+
       await loadPosts();
     });
   };
 
   const deletePost = async (post: PublicPost) => {
-    if (!window.confirm("Are you sure you want to delete this post?")) return;
+    if (!window.confirm(t.confirmDeletePost)) return;
 
     await runPostAction(post._id, async () => {
-      await apiRequest(`/public-space/posts/${post._id}`, { method: "DELETE" });
+      await apiRequest(`/public-space/posts/${post._id}`, {
+        method: "DELETE",
+      });
+
       setPosts((prev) => prev.filter((item) => item._id !== post._id));
-      setActionNotices((prev) => ({ ...prev, [post._id]: "Post deleted." }));
+      setActionNotices((prev) => ({
+        ...prev,
+        [post._id]: t.postDeletedSuccessfully,
+      }));
     });
   };
 
   const sharePost = async (post: PublicPost) => {
-    const url = `${window.location.origin}/public-space?post=${encodeURIComponent(post._id)}`;
+    const url = `${window.location.origin}/public-space?post=${encodeURIComponent(
+      post._id
+    )}`;
 
     try {
       if (navigator.share) {
         await navigator.share({
-          title: "InternArea Public Space",
-          text: post.text.slice(0, 200) || "Check out this post on InternArea.",
+          title: t.sharePostTitle,
+          text: post.text.slice(0, 200) || t.sharePostFallback,
           url,
         });
       } else if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
-        setActionNotices((prev) => ({ ...prev, [post._id]: "Share link copied." }));
+        setActionNotices((prev) => ({
+          ...prev,
+          [post._id]: t.shareLinkCopied,
+        }));
       } else {
-        window.prompt("Copy this link to share the post:", url);
+        window.prompt(t.copyShareLink, url);
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
+
       setActionErrors((prev) => ({
         ...prev,
-        [post._id]: "Could not share this post on this device.",
+        [post._id]: t.couldNotSharePost,
       }));
     }
   };
@@ -821,20 +1186,87 @@ export default function PublicSpacePage() {
       timeStyle: "short",
     });
 
+  const openHashtag = async (rawTag: string) => {
+    const tag = rawTag.replace(/^#/, "").toLowerCase();
+
+    if (!/^[\p{L}\p{N}_]{1,50}$/u.test(tag)) return;
+
+    setHashtagSearch(tag);
+    setHashtagLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const data = await apiRequest<{ posts?: PublicPost[] }>(
+        `/public-space/posts/hashtag/${encodeURIComponent(tag)}`
+      );
+
+      const foundPosts = data.posts || [];
+      setPosts(foundPosts);
+      setActiveHashtag(tag);
+      setLikedPosts({});
+      setSavedPosts({});
+
+      if (foundPosts.length > 0) {
+        const query = new URLSearchParams({
+          postIds: foundPosts.map((post) => post._id).join(","),
+        });
+
+        const status = await apiRequest<{
+          likedPostIds?: string[];
+          savedPostIds?: string[];
+        }>(`/public-space/interactions/status?${query}`);
+
+        setLikedPosts(
+          Object.fromEntries(
+            foundPosts.map((post) => [
+              post._id,
+              (status.likedPostIds || []).includes(post._id),
+            ])
+          )
+        );
+
+        setSavedPosts(
+          Object.fromEntries(
+            foundPosts.map((post) => [
+              post._id,
+              (status.savedPostIds || []).includes(post._id),
+            ])
+          )
+        );
+      }
+    } catch (err) {
+      setError(
+        localizeError(
+          err instanceof Error ? err.message : "Could not search hashtags."
+        )
+      );
+    } finally {
+      setHashtagLoading(false);
+    }
+  };
+
+  const openMention = (username: string) => {
+    const cleanUsername = username.replace(/^@/, "").trim().toLowerCase();
+
+    if (!/^[a-z0-9_]{3,30}$/.test(cleanUsername)) {
+      return;
+    }
+
+    window.location.href = `/profile/${encodeURIComponent(cleanUsername)}`;
+  };
+
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-900">
       <div className="mx-auto max-w-2xl">
-
-        <header className="mb-6 flex items-center justify-between gap-3">
-          <div>
+        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
             <p className="text-sm font-semibold text-indigo-600">INTERNAREA</p>
-            <h1 className="text-3xl font-bold">Public Space</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Share updates with your community.
-            </p>
+            <h1 className="text-3xl font-bold">{t.publicSpaceTitle}</h1>
+            <p className="mt-1 text-sm text-slate-500">{t.shareUpdates}</p>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-2">
             <NotificationBell />
 
             <button
@@ -845,54 +1277,108 @@ export default function PublicSpacePage() {
               }}
               className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
             >
-              Refresh
+              {t.refresh}
             </button>
           </div>
         </header>
 
+        <section className="mb-6 rounded-2xl border bg-white p-4 shadow-sm">
+          <form onSubmit={searchHashtag} className="flex gap-2">
+            <input
+              type="text"
+              value={hashtagSearch}
+              onChange={(e) => setHashtagSearch(e.target.value)}
+              placeholder={t.searchHashtagPlaceholder}
+              className="min-w-0 flex-1 rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-500"
+              maxLength={51}
+            />
+
+            <button
+              type="submit"
+              disabled={hashtagLoading}
+              className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+            >
+              {hashtagLoading ? t.searching : t.search}
+            </button>
+          </form>
+
+          {activeHashtag && (
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-indigo-700">
+                {t.resultsFor} #{activeHashtag}
+              </p>
+
+              <button
+                type="button"
+                onClick={showAllPosts}
+                className="text-sm font-semibold text-slate-600 underline"
+              >
+                {t.backToAllPosts}
+              </button>
+            </div>
+          )}
+        </section>
+
         <section className="mb-6 rounded-2xl border bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold">Friends</h2>
+            <h2 className="text-xl font-bold">{t.friends}</h2>
             <span className="rounded-full bg-indigo-50 px-3 py-1 text-sm font-semibold text-indigo-700">
-              {friends.length} accepted
+              {friends.length} {t.accepted}
             </span>
           </div>
 
           <form onSubmit={sendFriendRequest} className="space-y-3">
             <label htmlFor="targetUid" className="block text-sm font-semibold">
-              Send a friend request
+              {t.sendFriendRequest}
             </label>
+
             <input
               id="targetUid"
               value={targetUid}
               onChange={(event) => setTargetUid(event.target.value)}
-              placeholder="Recipient's Firebase UID"
+              placeholder={t.recipientFirebaseUid}
               autoComplete="off"
               className="w-full rounded-xl border px-4 py-3"
             />
+
             <button
               type="submit"
               disabled={!targetUid.trim() || sendingRequest}
               className="w-full rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
             >
-              {sendingRequest ? "Sending..." : "Send friend request"}
+              {sendingRequest ? t.sending : t.sendFriendRequest}
             </button>
           </form>
 
-          {friendshipError && <p role="alert" className="mt-3 text-sm text-red-700">{friendshipError}</p>}
-          {friendshipNotice && <p role="status" className="mt-3 text-sm text-green-700">{friendshipNotice}</p>}
+          {friendshipError && (
+            <p role="alert" className="mt-3 text-sm text-red-700">
+              {friendshipError}
+            </p>
+          )}
+
+          {friendshipNotice && (
+            <p role="status" className="mt-3 text-sm text-green-700">
+              {friendshipNotice}
+            </p>
+          )}
 
           <div className="mt-6 border-t pt-5">
-            <h3 className="mb-3 font-semibold">Incoming requests ({incomingRequests.length})</h3>
+            <h3 className="mb-3 font-semibold">
+              {t.incomingRequests} ({incomingRequests.length})
+            </h3>
+
             {friendshipsLoading ? (
-              <p className="text-sm text-slate-500">Loading...</p>
+              <p className="text-sm text-slate-500">{t.loading}</p>
             ) : incomingRequests.length === 0 ? (
-              <p className="text-sm text-slate-500">No incoming requests.</p>
+              <p className="text-sm text-slate-500">{t.noIncomingRequests}</p>
             ) : (
               <div className="space-y-3">
                 {incomingRequests.map((request) => (
                   <div key={request._id} className="rounded-xl border p-3">
-                    <p className="break-all text-sm">From: {request.requestedByUid}</p>
+                    <p className="break-all text-sm">
+                      {t.from}: {request.requestedByUid}
+                    </p>
+
                     <div className="mt-3 flex gap-2">
                       <button
                         type="button"
@@ -900,15 +1386,18 @@ export default function PublicSpacePage() {
                         onClick={() => void respondToRequest(request, "accept")}
                         className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                       >
-                        {respondingId === request._id ? "Processing..." : "Accept"}
+                        {respondingId === request._id
+                          ? t.processing
+                          : t.accept}
                       </button>
+
                       <button
                         type="button"
                         disabled={!!respondingId}
                         onClick={() => void respondToRequest(request, "reject")}
                         className="rounded-lg border px-4 py-2 text-sm font-semibold disabled:opacity-50"
                       >
-                        Reject
+                        {t.reject}
                       </button>
                     </div>
                   </div>
@@ -917,27 +1406,27 @@ export default function PublicSpacePage() {
             )}
           </div>
 
-
           <div className="mt-6 border-t pt-5">
             <h3 className="mb-3 font-semibold">
-              Your friends ({friends.length})
+              {t.yourFriends} ({friends.length})
             </h3>
 
             {friendshipsLoading ? (
-              <p className="text-sm text-slate-500">Loading...</p>
+              <p className="text-sm text-slate-500">{t.loading}</p>
             ) : friends.length === 0 ? (
-              <p className="text-sm text-slate-500">
-                Your friends will appear here.
-              </p>
+              <p className="text-sm text-slate-500">{t.friendsWillAppear}</p>
             ) : (
               <ul className="space-y-2">
-
                 {friends.map((friend) => {
                   const uid = typeof friend === "string" ? friend : friend.uid;
 
                   return (
                     <li
-                      key={typeof friend === "string" ? friend : friend.friendshipId || friend.uid}
+                      key={
+                        typeof friend === "string"
+                          ? friend
+                          : friend.friendshipId || friend.uid
+                      }
                       className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm"
                     >
                       <div className="min-w-0 break-all">
@@ -945,7 +1434,8 @@ export default function PublicSpacePage() {
 
                         {typeof friend !== "string" && friend.since && (
                           <p className="mt-1 text-xs text-slate-500">
-                            Friends since {new Date(friend.since).toLocaleDateString()}
+                            {t.friendsSince}{" "}
+                            {new Date(friend.since).toLocaleDateString()}
                           </p>
                         )}
                       </div>
@@ -956,35 +1446,95 @@ export default function PublicSpacePage() {
                           onClick={() => void unfollowFriend(friend)}
                           className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-50"
                         >
-                          Unfollow
+                          {t.unfollow}
                         </button>
                       )}
                     </li>
                   );
                 })}
-
               </ul>
             )}
           </div>
-
         </section>
 
-        <form onSubmit={createPost} className="mb-6 rounded-2xl border bg-white p-5 shadow-sm">
-          <h2 className="mb-3 text-lg font-semibold">Create a post</h2>
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            maxLength={5000}
-            rows={4}
-            placeholder="What would you like to share? Use #hashtags or @mentions."
-            className="w-full resize-y rounded-xl border p-4"
-          />
-          <p className="mt-1 text-right text-xs text-slate-500">{text.length}/5000 characters</p>
+        <form
+          onSubmit={createPost}
+          className="mb-6 rounded-2xl border bg-white p-5 shadow-sm"
+        >
+          <h2 className="mb-3 text-lg font-semibold">{t.createPostTitle}</h2>
 
+          <div className="relative">
+            <textarea
+              ref={postTextareaRef}
+              value={text}
+              onChange={handlePostTextChange}
+              maxLength={5000}
+              rows={4}
+              placeholder={t.postPlaceholder}
+              className="w-full resize-y rounded-xl border p-4"
+            />
+
+            {mentionQuery !== null && (
+              <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border bg-white shadow-xl">
+                {mentionLoading ? (
+                  <p className="p-3 text-sm text-slate-500">
+                    {t.searchingUsers}
+                  </p>
+                ) : mentionError ? (
+                  <p className="p-3 text-sm text-red-600">{mentionError}</p>
+                ) : mentionQuery.length < 2 ? (
+                  <p className="p-3 text-sm text-slate-500">
+                    {t.typeTwoCharacters}
+                  </p>
+                ) : mentionUsers.length === 0 ? (
+                  <p className="p-3 text-sm text-slate-500">
+                    {t.noMatchingUsernames}
+                  </p>
+                ) : (
+                  mentionUsers.map((user) => (
+                    <button
+                      key={user.firebaseUid}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectMentionUser(user)}
+                      className="flex w-full items-center gap-3 border-b p-3 text-left last:border-b-0 hover:bg-slate-50"
+                    >
+                      {user.photoURL ? (
+                        <img
+                          src={user.photoURL}
+                          alt=""
+                          className="h-9 w-9 rounded-full object-cover"
+                        />
+                      ) : (
+                        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-100 font-bold text-indigo-700">
+                          {(user.displayName || user.username)
+                            .charAt(0)
+                            .toUpperCase()}
+                        </span>
+                      )}
+
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">
+                          {user.displayName || user.username}
+                        </span>
+                        <span className="block text-xs text-slate-500">
+                          @{user.username}
+                        </span>
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          <p className="mt-1 text-right text-xs text-slate-500">
+            {text.length}/5000 {t.characters}
+          </p>
 
           <div className="mt-3 space-y-3">
             <label htmlFor="mediaUrl" className="block text-sm font-semibold">
-              Image or video URL (optional)
+              {t.mediaUrlLabel}
             </label>
 
             <input
@@ -995,7 +1545,7 @@ export default function PublicSpacePage() {
                 setMediaUrl(event.target.value);
                 setVideoFile(null);
               }}
-              placeholder="Paste an image, MP4, YouTube or Google Drive URL"
+              placeholder={t.mediaUrlPlaceholder}
               className="w-full rounded-xl border px-4 py-3"
             />
 
@@ -1006,13 +1556,16 @@ export default function PublicSpacePage() {
               }
               className="w-full rounded-xl border bg-white px-3 py-3"
             >
-              <option value="image">Image</option>
-              <option value="video">Video</option>
+              <option value="image">{t.image}</option>
+              <option value="video">{t.video}</option>
             </select>
 
             <div className="rounded-xl border border-dashed p-4">
-              <label htmlFor="videoFile" className="block text-sm font-semibold">
-                Or upload a video from your device
+              <label
+                htmlFor="videoFile"
+                className="block text-sm font-semibold"
+              >
+                {t.uploadVideoDevice}
               </label>
 
               <input
@@ -1029,23 +1582,23 @@ export default function PublicSpacePage() {
 
               {videoFile && (
                 <p className="mt-2 break-all text-sm text-green-700">
-                  Selected: {videoFile.name}
+                  {t.selected}: {videoFile.name}
                 </p>
               )}
 
               <p className="mt-1 text-xs text-slate-500">
-                Maximum size: 50 MB. Supported: MP4, WebM, MOV and OGG.
+                {t.maximumVideoSize}
               </p>
 
               {uploadingVideo && (
                 <p className="mt-2 text-sm font-semibold text-indigo-600">
-                  Uploading video to Cloudinary...
+                  {t.uploadingToCloudinary}
                 </p>
               )}
             </div>
 
             <label htmlFor="privacy" className="block text-sm font-semibold">
-              Who can see this post?
+              {t.whoCanSeePost}
             </label>
 
             <select
@@ -1056,11 +1609,10 @@ export default function PublicSpacePage() {
               }
               className="w-full rounded-xl border bg-white px-3 py-3"
             >
-              <option value="public">Public</option>
-              <option value="friends">Friends only</option>
+              <option value="public">{t.public}</option>
+              <option value="friends">{t.friendsOnly}</option>
             </select>
           </div>
-
 
           <button
             type="submit"
@@ -1071,43 +1623,107 @@ export default function PublicSpacePage() {
             }
             className="mt-4 w-full rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
           >
-            {publishing ? "Publishing..." : "Publish post"}
+            {publishing ? t.publishing : t.publishPost}
           </button>
         </form>
 
-        {error && <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
-        {notice && <div role="status" className="mb-4 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">{notice}</div>}
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+          >
+            {error}
+          </div>
+        )}
+
+        {notice && (
+          <div
+            role="status"
+            className="mb-4 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700"
+          >
+            {notice}
+          </div>
+        )}
 
         <section>
-          <h2 className="mb-4 text-xl font-bold">Recent posts</h2>
+          <h2 className="mb-4 text-xl font-bold">{t.recentPosts}</h2>
+
           {loading ? (
-            <p className="rounded-xl bg-white p-6 text-slate-500">Loading posts...</p>
+            <p className="rounded-xl bg-white p-6 text-slate-500">
+              {t.loadingPosts}
+            </p>
           ) : posts.length === 0 ? (
-            <p className="rounded-xl bg-white p-6 text-slate-500">No public posts yet.</p>
+            <p className="rounded-xl bg-white p-6 text-slate-500">
+              {activeHashtag
+                ? `${t.noHashtagPosts} #${activeHashtag}.`
+                : t.noPublicPosts}
+            </p>
           ) : (
             <div className="space-y-4">
               {posts.map((post) => (
-                <article key={post._id} className="rounded-2xl border bg-white p-5 shadow-sm">
+                <article
+                  key={post._id}
+                  className="rounded-2xl border bg-white p-5 shadow-sm"
+                >
                   <div className="mb-3 flex items-center gap-3">
                     {post.authorProfile?.photoURL ? (
-                      <img src={post.authorProfile.photoURL} alt="" className="h-11 w-11 rounded-full object-cover" />
+                      <img
+                        src={post.authorProfile.photoURL}
+                        alt=""
+                        className="h-11 w-11 rounded-full object-cover"
+                      />
                     ) : (
                       <div className="flex h-11 w-11 items-center justify-center rounded-full bg-indigo-100 font-bold text-indigo-700">
-                        {(post.authorProfile?.displayName || "U").charAt(0).toUpperCase()}
+                        {(post.authorProfile?.displayName || "U")
+                          .charAt(0)
+                          .toUpperCase()}
                       </div>
                     )}
+
                     <div className="min-w-0">
-                      <p className="font-semibold">
-                        {post.authorProfile?.displayName || post.authorProfile?.username || "InternArea member"}
-                      </p>
+                      {post.authorProfile?.username &&
+                      /^[a-z0-9_]{3,30}$/i.test(post.authorProfile.username) ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openMention(post.authorProfile!.username!)
+                            }
+                            className="block text-left font-semibold text-slate-900 hover:text-blue-600 hover:underline"
+                          >
+                            {post.authorProfile.displayName ||
+                              post.authorProfile.username}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openMention(post.authorProfile!.username!)
+                            }
+                            className="block text-xs text-slate-500 hover:text-blue-600 hover:underline"
+                          >
+                            @{post.authorProfile.username}
+                          </button>
+                        </>
+                      ) : (
+                        <p className="font-semibold">
+                          {post.authorProfile?.displayName ||
+                            t.internAreaMember}
+                        </p>
+                      )}
+
                       <p className="text-xs text-slate-500">
-                        {formatDate(post.createdAt)} · {post.privacy === "friends" ? "Friends" : "Public"}
+                        {formatDate(post.createdAt)} ·{" "}
+                        {post.privacy === "friends" ? t.friends : t.public}
                       </p>
                     </div>
                   </div>
 
                   {editingPostId === post._id ? (
-                    <form onSubmit={(event) => void saveEditedPost(event, post)} className="space-y-3">
+                    <form
+                      onSubmit={(event) => void saveEditedPost(event, post)}
+                      className="space-y-3"
+                    >
                       <textarea
                         value={editText}
                         onChange={(event) => setEditText(event.target.value)}
@@ -1115,26 +1731,47 @@ export default function PublicSpacePage() {
                         rows={4}
                         className="w-full rounded-xl border p-3"
                       />
+
                       <select
                         value={editPrivacy}
-                        onChange={(event) => setEditPrivacy(event.target.value as "public" | "friends")}
+                        onChange={(event) =>
+                          setEditPrivacy(
+                            event.target.value as "public" | "friends"
+                          )
+                        }
                         className="w-full rounded-xl border bg-white p-3"
                       >
-                        <option value="public">Public</option>
-                        <option value="friends">Friends only</option>
+                        <option value="public">{t.public}</option>
+                        <option value="friends">{t.friendsOnly}</option>
                       </select>
+
                       <div className="flex gap-2">
-                        <button type="submit" disabled={!!busyActions[post._id]} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
-                          Save changes
+                        <button
+                          type="submit"
+                          disabled={!!busyActions[post._id]}
+                          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                        >
+                          {t.saveChanges}
                         </button>
-                        <button type="button" onClick={() => setEditingPostId(null)} className="rounded-lg border px-4 py-2 text-sm font-semibold">
-                          Cancel
+
+                        <button
+                          type="button"
+                          onClick={() => setEditingPostId(null)}
+                          className="rounded-lg border px-4 py-2 text-sm font-semibold"
+                        >
+                          {t.cancel}
                         </button>
                       </div>
                     </form>
                   ) : (
                     <>
-                      <p className="whitespace-pre-wrap break-words leading-7">{post.text}</p>
+                      <PostText
+                        text={post.text}
+                        onHashtagClick={(tag) => void openHashtag(tag)}
+                        onMentionClick={(username) =>
+                          void openMention(username)
+                        }
+                      />
 
                       {post.media?.map((item, index) => (
                         <div key={`${post._id}-${index}`} className="mt-3">
@@ -1147,19 +1784,26 @@ export default function PublicSpacePage() {
                           ) : (
                             <PublicSpaceVideo
                               url={item.url}
-                              onFullscreen={(url, type) => setFullscreenVideo({ url, type })}
+                              onFullscreen={(url, type) =>
+                                setFullscreenVideo({ url, type })
+                              }
                             />
                           )}
                         </div>
                       ))}
-
                     </>
                   )}
 
                   <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t pt-3 text-sm text-slate-500">
-                    <span>{post.likesCount} likes</span>
-                    <span>{post.commentsCount} comments</span>
-                    <span>{post.sharesCount || 0} shares</span>
+                    <span>
+                      {post.likesCount} {t.likes}
+                    </span>
+                    <span>
+                      {post.commentsCount} {t.comments}
+                    </span>
+                    <span>
+                      {post.sharesCount || 0} {t.shares}
+                    </span>
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -1167,77 +1811,126 @@ export default function PublicSpacePage() {
                       type="button"
                       disabled={!!busyActions[post._id]}
                       onClick={() => void toggleLike(post)}
-                      className={`rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-50 ${likedPosts[post._id] ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "hover:bg-slate-50"}`}
+                      className={`rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-50 ${
+                        likedPosts[post._id]
+                          ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                          : "hover:bg-slate-50"
+                      }`}
                     >
-                      {likedPosts[post._id] ? "♥ Liked" : "♡ Like"}
+                      {likedPosts[post._id] ? `♥ ${t.liked}` : `♡ ${t.like}`}
                     </button>
-                    <button type="button" onClick={() => void toggleComments(post._id)} className="rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-slate-50">
-                      💬 {openComments[post._id] ? "Hide comments" : "Comments"}
+
+                    <button
+                      type="button"
+                      onClick={() => void toggleComments(post._id)}
+                      className="rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      💬{" "}
+                      {openComments[post._id]
+                        ? t.hideComments
+                        : t.comments}
                     </button>
+
                     <button
                       type="button"
                       disabled={!!busyActions[post._id]}
                       onClick={() => void toggleSave(post)}
-                      className={`rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-50 ${savedPosts[post._id] ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "hover:bg-slate-50"}`}
+                      className={`rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-50 ${
+                        savedPosts[post._id]
+                          ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                          : "hover:bg-slate-50"
+                      }`}
                     >
-                      {savedPosts[post._id] ? "🔖 Saved" : "🔖 Save"}
+                      🔖 {savedPosts[post._id] ? t.saved : t.save}
                     </button>
-                    <button type="button" onClick={() => void sharePost(post)} className="rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-slate-50">
-                      ↗ Share
+
+                    <button
+                      type="button"
+                      onClick={() => void sharePost(post)}
+                      className="rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      ↗ {t.share}
                     </button>
                   </div>
 
                   {post.authorUid === currentUid && (
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {post.editUntil && Date.now() <= new Date(post.editUntil).getTime() && (
-                        <button type="button" onClick={() => startEditingPost(post)} className="rounded-lg border px-3 py-2 text-sm font-semibold">
-                          Edit post
-                        </button>
-                      )}
+                      {post.editUntil &&
+                        Date.now() <= new Date(post.editUntil).getTime() && (
+                          <button
+                            type="button"
+                            onClick={() => startEditingPost(post)}
+                            className="rounded-lg border px-3 py-2 text-sm font-semibold"
+                          >
+                            {t.editPost}
+                          </button>
+                        )}
+
                       <button
                         type="button"
                         disabled={!!busyActions[post._id]}
                         onClick={() => void deletePost(post)}
                         className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50"
                       >
-                        Delete post
+                        {t.deletePost}
                       </button>
                     </div>
                   )}
 
                   {openComments[post._id] && (
                     <div className="mt-4 rounded-xl bg-slate-50 p-4">
-                      <h3 className="mb-3 font-semibold">Comments</h3>
+                      <h3 className="mb-3 font-semibold">{t.comments}</h3>
+
                       {commentsLoading[post._id] ? (
-                        <p className="text-sm text-slate-500">Loading comments...</p>
+                        <p className="text-sm text-slate-500">
+                          {t.loadingComments}
+                        </p>
                       ) : (commentsByPost[post._id] || []).length === 0 ? (
-                        <p className="text-sm text-slate-500">No comments yet.</p>
+                        <p className="text-sm text-slate-500">
+                          {t.noComments}
+                        </p>
                       ) : (
                         <div className="mb-4 space-y-3">
                           {(commentsByPost[post._id] || []).map((comment) => (
-                            <div key={comment.id} className="rounded-lg bg-white p-3">
+                            <div
+                              key={comment.id}
+                              className="rounded-lg bg-white p-3"
+                            >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-
                                   <p className="text-xs font-semibold text-slate-500">
                                     {comment.userUid === currentUid
-                                      ? "You"
+                                      ? t.you
                                       : comment.displayName ||
-                                      comment.username ||
-                                      "InternArea member"}
+                                        comment.username ||
+                                        t.internAreaMember}
                                   </p>
 
-                                  <p className="mt-1 whitespace-pre-wrap break-words text-sm">{comment.text}</p>
-                                  <p className="mt-1 text-xs text-slate-400">{formatDate(comment.createdAt)}</p>
+                                  <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+                                    {renderPublicText(
+                                      comment.text,
+                                      openHashtag,
+                                      openMention
+                                    )}
+                                  </p>
+
+                                  <p className="mt-1 text-xs text-slate-400">
+                                    {formatDate(comment.createdAt)}
+                                  </p>
                                 </div>
+
                                 {comment.userUid === currentUid && (
                                   <button
                                     type="button"
                                     disabled={deletingCommentId === comment.id}
-                                    onClick={() => void deleteComment(post._id, comment.id)}
+                                    onClick={() =>
+                                      void deleteComment(post._id, comment.id)
+                                    }
                                     className="shrink-0 text-xs font-semibold text-red-600 disabled:opacity-50"
                                   >
-                                    {deletingCommentId === comment.id ? "Deleting..." : "Delete"}
+                                    {deletingCommentId === comment.id
+                                      ? t.deleting
+                                      : t.delete}
                                   </button>
                                 )}
                               </div>
@@ -1246,23 +1939,40 @@ export default function PublicSpacePage() {
                         </div>
                       )}
 
-                      <form onSubmit={(event) => void addComment(event, post)} className="space-y-2">
+                      <form
+                        onSubmit={(event) => void addComment(event, post)}
+                        className="space-y-2"
+                      >
                         <textarea
                           value={commentText[post._id] || ""}
-                          onChange={(event) => setCommentText((prev) => ({ ...prev, [post._id]: event.target.value }))}
+                          onChange={(event) =>
+                            setCommentText((prev) => ({
+                              ...prev,
+                              [post._id]: event.target.value,
+                            }))
+                          }
                           maxLength={2000}
                           rows={2}
-                          placeholder="Write a comment..."
+                          placeholder={t.writeComment}
                           className="w-full rounded-lg border bg-white p-3 text-sm"
                         />
+
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs text-slate-500">{(commentText[post._id] || "").length}/2000</span>
+                          <span className="text-xs text-slate-500">
+                            {(commentText[post._id] || "").length}/2000
+                          </span>
+
                           <button
                             type="submit"
-                            disabled={!(commentText[post._id] || "").trim() || !!commentSubmitting[post._id]}
+                            disabled={
+                              !(commentText[post._id] || "").trim() ||
+                              !!commentSubmitting[post._id]
+                            }
                             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                           >
-                            {commentSubmitting[post._id] ? "Posting..." : "Add comment"}
+                            {commentSubmitting[post._id]
+                              ? t.posting
+                              : t.addComment}
                           </button>
                         </div>
                       </form>
@@ -1271,41 +1981,67 @@ export default function PublicSpacePage() {
 
                   {post.authorUid !== currentUid && (
                     <div className="mt-4 border-t pt-3">
-                      <label htmlFor={`report-${post._id}`} className="mb-2 block text-xs font-semibold text-slate-500">
-                        Report this post
+                      <label
+                        htmlFor={`report-${post._id}`}
+                        className="mb-2 block text-xs font-semibold text-slate-500"
+                      >
+                        {t.reportThisPost}
                       </label>
+
                       <div className="flex flex-wrap gap-2">
                         <select
                           id={`report-${post._id}`}
                           value={reportReasons[post._id] || "spam"}
-                          onChange={(event) => setReportReasons((prev) => ({ ...prev, [post._id]: event.target.value as REPORT_REASON }))}
+                          onChange={(event) =>
+                            setReportReasons((prev) => ({
+                              ...prev,
+                              [post._id]: event.target.value as REPORT_REASON,
+                            }))
+                          }
                           className="min-w-0 flex-1 rounded-lg border bg-white px-3 py-2 text-sm"
                         >
                           {REPORT_REASONS.map((reason) => (
-                            <option key={reason.value} value={reason.value}>{reason.label}</option>
+                            <option key={reason.value} value={reason.value}>
+                              {reason.label}
+                            </option>
                           ))}
                         </select>
+
                         <button
                           type="button"
                           disabled={!!busyActions[post._id]}
                           onClick={() => void reportPost(post)}
                           className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50"
                         >
-                          Report
+                          {t.report}
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {actionErrors[post._id] && <div role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{actionErrors[post._id]}</div>}
-                  {actionNotices[post._id] && <div role="status" className="mt-3 rounded-lg bg-green-50 p-3 text-sm text-green-700">{actionNotices[post._id]}</div>}
+                  {actionErrors[post._id] && (
+                    <div
+                      role="alert"
+                      className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700"
+                    >
+                      {actionErrors[post._id]}
+                    </div>
+                  )}
+
+                  {actionNotices[post._id] && (
+                    <div
+                      role="status"
+                      className="mt-3 rounded-lg bg-green-50 p-3 text-sm text-green-700"
+                    >
+                      {actionNotices[post._id]}
+                    </div>
+                  )}
                 </article>
               ))}
             </div>
           )}
         </section>
       </div>
-
 
       {fullscreenVideo && (
         <div
@@ -1317,7 +2053,7 @@ export default function PublicSpacePage() {
             onClick={() => setFullscreenVideo(null)}
             className="absolute right-5 top-5 z-10 rounded-lg bg-white/20 px-4 py-2 font-semibold text-white"
           >
-            Close ✕
+            {t.close} ✕
           </button>
 
           <div

@@ -1,7 +1,7 @@
 export default function Footer() {
   return (
     <footer className="bg-gray-800 text-white py-12">
-      <div className="container mx-auto px-6">
+     <div className="w-full max-w-none mx-auto px-6 sm:px-8 lg:px-10 xl:px-12">
 
         {/* First Row */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-8">

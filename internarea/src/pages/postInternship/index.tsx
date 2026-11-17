@@ -338,7 +338,7 @@ const index = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-5xl mx-auto">
+      <div className="w-full max-w-none mx-auto px-5 sm:px-8 lg:px-12">
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
 

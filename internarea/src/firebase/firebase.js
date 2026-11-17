@@ -8,6 +8,7 @@ import {
   EmailAuthProvider,
   RecaptchaVerifier,
   signInWithPhoneNumber,
+  signOut,
 } from "firebase/auth";
 
 import { getStorage } from "firebase/storage";
@@ -37,4 +38,5 @@ export {
   EmailAuthProvider,
   RecaptchaVerifier,
   signInWithPhoneNumber,
+  signOut,
 };

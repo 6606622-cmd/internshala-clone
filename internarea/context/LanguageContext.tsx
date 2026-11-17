@@ -1,7 +1,9 @@
+
 import React, {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useRouter } from "next/router";
@@ -15,7 +17,16 @@ import fr from "../translations/fr";
 
 import { auth } from "../src/firebase/firebase";
 
-const translations = { en, es, hi, pt, zh, fr };
+// English acts as the fallback dictionary.
+// Any missing key in another language falls back to English.
+const translations = {
+  en,
+  es: { ...en, ...es },
+  hi: { ...en, ...hi },
+  pt: { ...en, ...pt },
+  zh: { ...en, ...zh },
+  fr: { ...en, ...fr },
+};
 
 type Language = keyof typeof translations;
 
@@ -28,7 +39,12 @@ interface LanguageContextType {
 const LanguageContext =
   createContext<LanguageContextType | undefined>(undefined);
 
-const API_URL = `${process.env.NEXT_PUBLIC_API_URL || "https://internshala-clone-a0st.onrender.com"}/api/language`;
+const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://internshala-clone-a0st.onrender.com"
+).replace(/\/+$/, "");
+
+const API_URL = `${API_BASE_URL}/api/language`;
 
 const isLanguage = (value: unknown): value is Language =>
   typeof value === "string" &&
@@ -41,8 +57,7 @@ export const LanguageProvider = ({
 }) => {
   const router = useRouter();
 
-  const [language, setLanguageState] =
-    useState<Language>("en");
+  const [language, setLanguageState] = useState<Language>("en");
 
   const [showOtp, setShowOtp] = useState(false);
   const [otp, setOtp] = useState("");
@@ -51,27 +66,26 @@ export const LanguageProvider = ({
   const [pendingLanguage, setPendingLanguage] =
     useState<Language | null>(null);
 
-  const t = translations[language];
+  // Prevent duplicate French OTP requests.
+  const frenchOtpRequestRef = useRef(false);
+  const frenchOtpPendingRef = useRef(false);
 
-  const getLanguageKey = () =>
-    `language_${router.pathname}`;
+  const t: typeof en = translations[language];
 
-  // Apply and save the browser preference.
+  const getLanguageKey = () => "internarea_language";
 
+  // Save and apply a language.
   const applyLanguage = (newLanguage: Language) => {
-  setLanguageState(newLanguage);
+    setLanguageState(newLanguage);
 
-  try {
-    if (router.isReady) {
+    try {
       localStorage.setItem(getLanguageKey(), newLanguage);
+    } catch (error) {
+      console.error("Failed to save language preference:", error);
     }
-  } catch (error) {
-    console.error("Failed to save language preference:", error);
-  }
-}; 
+  };
 
-
-  // Load the browser preference first, then the user preference.
+  // Load browser preference and authenticated server preference.
   useEffect(() => {
     if (!router.isReady) return;
 
@@ -81,26 +95,20 @@ export const LanguageProvider = ({
       let browserLanguage: Language = "en";
 
       try {
-        const savedPageLanguage = localStorage.getItem(
-          getLanguageKey()
-        );
+        const savedLanguage = localStorage.getItem(getLanguageKey());
 
-        if (isLanguage(savedPageLanguage)) {
-          browserLanguage = savedPageLanguage;
+        // French is never activated from browser storage alone.
+        if (isLanguage(savedLanguage) && savedLanguage !== "fr") {
+          browserLanguage = savedLanguage;
         }
-
       } catch (error) {
-        console.error(
-          "Failed to read saved language:",
-          error
-        );
+        console.error("Failed to read saved language:", error);
       }
 
       if (active) {
         setLanguageState(browserLanguage);
       }
 
-      // Wait for Firebase to restore the authenticated user.
       try {
         await auth.authStateReady();
 
@@ -128,13 +136,11 @@ export const LanguageProvider = ({
         const data = await response.json();
 
         if (active && isLanguage(data.language)) {
+          // Server preference is authoritative for logged-in users.
           applyLanguage(data.language);
         }
       } catch (error) {
-        console.error(
-          "Failed to load language preference:",
-          error
-        );
+        console.error("Failed to load language preference:", error);
       }
     };
 
@@ -145,27 +151,61 @@ export const LanguageProvider = ({
     };
   }, [router.isReady, router.pathname]);
 
-  // Save authenticated users' normal language changes.
+  // Change the selected language.
   const setLanguage = async (
     newLanguage: Language
-  ) => {
+  ): Promise<void> => {
     if (!isLanguage(newLanguage) || newLanguage === language) {
       return;
     }
 
-    // French always requires server-side OTP verification.
+    try {
+      await auth.authStateReady();
+    } catch (error) {
+      console.error(
+        "Firebase authentication initialization failed:",
+        error
+      );
+
+      if (newLanguage === "fr") {
+        setPendingLanguage(null);
+        setOtpMessage(t.networkErrorLanguage);
+        setShowOtp(true);
+      }
+
+      return;
+    }
+
+    // FRENCH: EMAIL OTP IS REQUIRED.
     if (newLanguage === "fr") {
-      if (!auth.currentUser) {
+      if (
+        frenchOtpRequestRef.current ||
+        frenchOtpPendingRef.current
+      ) {
+        return;
+      }
+
+      const currentUser = auth.currentUser;
+
+      // Logged-out users must sign in first.
+      // No OTP is sent in this situation.
+      if (!currentUser) {
+        setPendingLanguage(null);
+        setOtp("");
         setOtpMessage(t.loginBeforeFrench);
         setShowOtp(true);
         return;
       }
 
-      try {
-        setOtpLoading(true);
-        setOtpMessage("");
+      frenchOtpRequestRef.current = true;
 
-        const token = await auth.currentUser.getIdToken();
+      setPendingLanguage(null);
+      setOtp("");
+      setOtpMessage("");
+      setOtpLoading(true);
+
+      try {
+        const token = await currentUser.getIdToken();
 
         const response = await fetch(
           `${API_URL}/request-french-otp`,
@@ -184,61 +224,65 @@ export const LanguageProvider = ({
         const data = await response.json();
 
         if (!response.ok || !data.success) {
-          setOtpMessage(
-            data.message || t.failedToSendOtp
-          );
+          setPendingLanguage(null);
+          setOtpMessage(data.message || t.failedToSendOtp);
           setShowOtp(true);
           return;
         }
 
+        // OTP was successfully sent.
+        frenchOtpPendingRef.current = true;
+
         setPendingLanguage("fr");
         setOtp("");
-        setShowOtp(true);
         setOtpMessage(t.otpSent);
+        setShowOtp(true);
       } catch (error) {
         console.error("French OTP request error:", error);
+
+        setPendingLanguage(null);
         setOtpMessage(t.networkErrorLanguage);
         setShowOtp(true);
       } finally {
+        frenchOtpRequestRef.current = false;
         setOtpLoading(false);
       }
 
       return;
     }
 
-    // Unauthenticated users can change their browser preference.
-    if (!auth.currentUser) {
+    // OTHER LANGUAGES.
+    const currentUser = auth.currentUser;
+
+    // Logged-out users can change non-French languages locally.
+    if (!currentUser) {
       applyLanguage(newLanguage);
       return;
     }
 
+    // Save authenticated users' preferences on the backend.
     try {
       setOtpLoading(true);
       setOtpMessage("");
 
-      const token = await auth.currentUser.getIdToken();
+      const token = await currentUser.getIdToken();
 
-      const response = await fetch(
-        `${API_URL}/preference`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            language: newLanguage,
-            page: router.pathname,
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/preference`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          language: newLanguage,
+          page: router.pathname,
+        }),
+      });
 
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        setOtpMessage(
-          data.message || t.failedToChangeLanguage
-        );
+        setOtpMessage(data.message || t.failedToChangeLanguage);
         return;
       }
 
@@ -255,7 +299,7 @@ export const LanguageProvider = ({
     }
   };
 
-  // Verify the French OTP on the backend.
+  // Verify the French email OTP.
   const verifyFrenchOtp = async () => {
     if (!/^\d{6}$/.test(otp)) {
       setOtpMessage(t.enterOtpMessage);
@@ -300,8 +344,11 @@ export const LanguageProvider = ({
         return;
       }
 
-      // Apply French only after successful backend verification.
+      // Activate French only after successful backend verification.
       applyLanguage("fr");
+
+      frenchOtpPendingRef.current = false;
+      frenchOtpRequestRef.current = false;
 
       setShowOtp(false);
       setOtp("");
@@ -315,7 +362,11 @@ export const LanguageProvider = ({
     }
   };
 
+  // Cancel French verification.
   const cancelFrenchChange = () => {
+    frenchOtpRequestRef.current = false;
+    frenchOtpPendingRef.current = false;
+
     setShowOtp(false);
     setOtp("");
     setPendingLanguage(null);
@@ -324,7 +375,11 @@ export const LanguageProvider = ({
 
   return (
     <LanguageContext.Provider
-      value={{ language, setLanguage, t }}
+      value={{
+        language,
+        setLanguage,
+        t,
+      }}
     >
       {children}
 
@@ -343,27 +398,31 @@ export const LanguageProvider = ({
               {t.frenchVerification}
             </h2>
 
-            <p className="mb-4 text-sm text-gray-600">
-              {t.frenchOtpInfo}
-            </p>
+            {pendingLanguage === "fr" && (
+              <>
+                <p className="mb-4 text-sm text-gray-600">
+                  {t.frenchOtpInfo}
+                </p>
 
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              value={otp}
-              onChange={(e) =>
-                setOtp(
-                  e.target.value
-                    .replace(/\D/g, "")
-                    .slice(0, 6)
-                )
-              }
-              placeholder={t.enterOtp}
-              maxLength={6}
-              aria-label={t.enterOtp}
-              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-800 outline-none focus:border-blue-500"
-            />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={otp}
+                  onChange={(event) =>
+                    setOtp(
+                      event.target.value
+                        .replace(/\D/g, "")
+                        .slice(0, 6)
+                    )
+                  }
+                  placeholder={t.enterOtp}
+                  maxLength={6}
+                  aria-label={t.enterOtp}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-800 outline-none focus:border-blue-500"
+                />
+              </>
+            )}
 
             {otpMessage && (
               <p
@@ -384,16 +443,16 @@ export const LanguageProvider = ({
                 {t.cancel}
               </button>
 
-              <button
-                type="button"
-                onClick={verifyFrenchOtp}
-                disabled={otpLoading || otp.length !== 6}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {otpLoading
-                  ? t.verifying
-                  : t.verify}
-              </button>
+              {pendingLanguage === "fr" && (
+                <button
+                  type="button"
+                  onClick={verifyFrenchOtp}
+                  disabled={otpLoading || otp.length !== 6}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {otpLoading ? t.verifying : t.verify}
+                </button>
+              )}
             </div>
           </div>
         </div>

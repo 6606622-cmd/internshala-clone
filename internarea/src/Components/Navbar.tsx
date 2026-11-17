@@ -8,8 +8,17 @@ import {
   sendEmailVerification,
   signOut,
   getIdTokenResult,
+  reload,
+  onAuthStateChanged,
 } from "firebase/auth";
-import { Search, User, LogIn, Users } from "lucide-react";
+import {
+  Search,
+  User,
+  LogIn,
+  Users,
+  Menu,
+  X,
+} from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useSelector } from "react-redux";
@@ -20,6 +29,9 @@ import axios from "axios";
 
 const API_BASE = "https://internshala-clone-a0st.onrender.com/api";
 const LOGIN_SESSION_KEY = "internarea_login_session";
+
+const PENDING_EMAIL_VERIFICATION_KEY =
+  "internarea_pending_email_verification";
 
 function saveLoginSession(token: string) {
   localStorage.setItem(LOGIN_SESSION_KEY, token);
@@ -126,6 +138,32 @@ async function ensureUserProfile(user: any) {
 
 type AuthMode = "login" | "signup";
 
+const GoogleIcon = () => (
+  <svg
+    className="h-5 w-5 shrink-0"
+    viewBox="0 0 48 48"
+    aria-label="Google"
+    role="img"
+  >
+    <path
+      fill="#4285F4"
+      d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.9 6.1-15z"
+    />
+    <path
+      fill="#34A853"
+      d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.2C9.2 39.4 16.1 44 24 44z"
+    />
+    <path
+      fill="#FBBC05"
+      d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.2H5.8a20 20 0 0 0 0 17.6z"
+    />
+    <path
+      fill="#EA4335"
+      d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4 16.1 4 9.2 8.6 5.8 15.2l6.8 5.2c1.6-4.8 6.1-8.3 11.4-8.3z"
+    />
+  </svg>
+);
+
 const Navbar = () => {
   const user = useSelector(selectuser);
   const { language, setLanguage, t } = useLanguage();
@@ -153,6 +191,19 @@ const Navbar = () => {
   const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
   const [usernameSubmitting, setUsernameSubmitting] = useState(false);
   const [usernameError, setUsernameError] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!router.isReady) return;
+
+    if (router.query.openLogin === "1") {
+      setAuthMode("login");
+      setShowPassword(false);
+      setShowLoginModal(true);
+
+      // Remove the parameter after opening the modal.
+      router.replace("/", undefined, { shallow: true });
+    }
+  }, [router.isReady, router.query.openLogin]);
 
   const checkMustChangePassword = async (
     firebaseUser: import("firebase/auth").User
@@ -390,15 +441,28 @@ const Navbar = () => {
     }
   };
 
+
   // Continue with Google.
   const handleLogin = async () => {
     if (authLoading) return;
 
+    let currentStage = "Opening Google sign-in";
+
     try {
       setAuthLoading(true);
 
+      currentStage = "Google authentication";
       const credential = await signInWithPopup(auth, provider);
+
+      console.log("Google authentication successful:", {
+        uid: credential.user.uid,
+        email: credential.user.email,
+      });
+
+      currentStage = "Starting login security";
       const securityResult = await startLoginSecurity(credential.user);
+
+      console.log("Login security response:", securityResult);
 
       if (securityResult.otpRequired) {
         setLoginActivityId(securityResult.activityId);
@@ -406,6 +470,7 @@ const Navbar = () => {
         return;
       }
 
+      currentStage = "Checking password requirements";
       const mustChangePassword = await checkMustChangePassword(
         credential.user
       );
@@ -416,32 +481,26 @@ const Navbar = () => {
         return;
       }
 
-      // Create or retrieve the user's profile.
-      const profileReady = await continueAfterProfileCheck(credential.user);
+      currentStage = "Loading user profile";
+      const profileReady = await continueAfterProfileCheck(
+        credential.user
+      );
 
       if (!profileReady) return;
 
       toast.success(t.loginSuccess);
     } catch (error: unknown) {
-      const code =
-        typeof error === "object" &&
-          error !== null &&
-          "code" in error
-          ? String(error.code)
-          : "";
+      console.error("Google login failed at:", currentStage);
+      console.error("Google login full error:", error);
 
-      console.error("Google login error code:", code);
+      const message =
+        error instanceof Error ? error.message : "Unknown error";
 
-      if (code === "auth/popup-closed-by-user") {
-        toast.info("Google sign-in was cancelled.");
-      } else {
-        toast.error(t.loginFailed);
-      }
+      toast.error(`${currentStage}: ${message}`);
     } finally {
       setAuthLoading(false);
     }
   };
-
 
   // Login using an existing email and password.
   const handleEmailLogin = async (
@@ -467,16 +526,46 @@ const Navbar = () => {
         loginPassword
       );
 
+
       // Check email verification before creating a backend login session.
       if (!credential.user.emailVerified) {
-        await signOut(auth);
-        clearLoginSession();
+        try {
+          const actionCodeSettings = {
+            url: `${window.location.origin}/?continueEmailVerification=1`,
+            handleCodeInApp: false,
+          };
 
-        toast.error(
-          "Please verify your email before logging in. Check your inbox for the verification link."
-        );
+          await sendEmailVerification(
+            credential.user,
+            actionCodeSettings
+          );
+
+          // Remember that this browser is waiting for email verification.
+          localStorage.setItem(
+            PENDING_EMAIL_VERIFICATION_KEY,
+            "true"
+          );
+
+          toast.success(
+            "Verification email sent! Open the link in your email. Your login OTP will open automatically after verification."
+          );
+        } catch (verificationError) {
+          console.error(
+            "Automatic verification email error:",
+            verificationError
+          );
+
+          toast.error(
+            "Could not send the verification email. Please try again later."
+          );
+
+          await signOut(auth);
+          clearLoginSession();
+        }
+
         return;
       }
+
 
       const securityResult = await startLoginSecurity(credential.user);
 
@@ -509,37 +598,141 @@ const Navbar = () => {
       setShowPassword(false);
       setAuthMode("login");
     } catch (error: unknown) {
-      const code =
-        typeof error === "object" &&
-          error !== null &&
-          "code" in error
-          ? String(error.code)
-          : "";
+      console.error("EMAIL LOGIN FULL ERROR:", error);
 
-      console.error("Email login error code:", code);
-
-      if (
-        code === "auth/invalid-credential" ||
-        code === "auth/wrong-password" ||
-        code === "auth/user-not-found"
-      ) {
-        toast.error(
-          "Email or password is incorrect. Check your details or reset your password."
-        );
-      } else if (code === "auth/invalid-email") {
-        toast.error("Please enter a valid email address.");
-      } else if (code === "auth/too-many-requests") {
-        toast.error("Too many attempts. Please try again later.");
-      } else if (code === "auth/user-disabled") {
-        toast.error("This account has been disabled.");
-      } else {
-        toast.error("Login failed. Please try again.");
-      }
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unknown email login error. Check console."
+      );
     } finally {
       setAuthLoading(false);
     }
   };
 
+
+  useEffect(() => {
+  let active = true;
+  let processing = false;
+  let checkTimer: ReturnType<typeof setInterval> | undefined;
+
+  const checkEmailVerification = async () => {
+    if (
+      !active ||
+      processing ||
+      localStorage.getItem(PENDING_EMAIL_VERIFICATION_KEY) !== "true"
+    ) {
+      return;
+    }
+
+    const currentUser = auth.currentUser;
+
+    if (!currentUser) return;
+
+    try {
+      await reload(currentUser);
+
+      if (!active || !currentUser.emailVerified) return;
+
+      processing = true;
+
+      // Remove the pending marker to prevent duplicate OTP requests.
+      localStorage.removeItem(
+        PENDING_EMAIL_VERIFICATION_KEY
+      );
+
+      setAuthLoading(true);
+
+      toast.success("Email verified! Starting login verification...");
+
+      const securityResult = await startLoginSecurity(currentUser);
+
+      if (!active) return;
+
+      if (securityResult.otpRequired) {
+        setLoginActivityId(securityResult.activityId);
+        setLoginOtp("");
+        setShowLoginModal(false);
+        setShowLoginOtp(true);
+
+        toast.info("Enter the OTP sent to your registered email.");
+        return;
+      }
+
+      const mustChangePassword =
+        await checkMustChangePassword(currentUser);
+
+      if (mustChangePassword) {
+        setShowLoginModal(false);
+        toast.info("Please change your password to continue.");
+        await router.push("/change-password");
+        return;
+      }
+
+      const profileReady =
+        await continueAfterProfileCheck(currentUser);
+
+      if (!active || !profileReady) return;
+
+      setShowLoginModal(false);
+      toast.success("Login successful!");
+
+      window.location.reload();
+    } catch (error) {
+      console.error(
+        "Automatic post-verification login error:",
+        error
+      );
+
+      // Restore the marker so the process can be retried.
+      localStorage.setItem(
+        PENDING_EMAIL_VERIFICATION_KEY,
+        "true"
+      );
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not continue login after email verification."
+      );
+
+      processing = false;
+    } finally {
+      if (active) {
+        setAuthLoading(false);
+      }
+    }
+  };
+
+  // Wait for Firebase to restore the authenticated user.
+  const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    if (firebaseUser) {
+      void checkEmailVerification();
+    }
+  });
+
+  // Also detect verification while the page remains open.
+  checkTimer = setInterval(() => {
+    void checkEmailVerification();
+  }, 2000);
+
+  const handleFocus = () => {
+    void checkEmailVerification();
+  };
+
+  window.addEventListener("focus", handleFocus);
+
+  return () => {
+    active = false;
+    unsubscribe();
+
+    if (checkTimer) {
+      clearInterval(checkTimer);
+    }
+
+    window.removeEventListener("focus", handleFocus);
+  };
+}, []);
 
   // Resend the verification email for an existing account.
 
@@ -944,109 +1137,99 @@ const Navbar = () => {
 
   return (
     <div className="relative">
-      <nav className="bg-white shadow-md">
-        <div className="w-full max-w-none mx-auto px-4 sm:px-6 lg:px-10 xl:px-12">
-          <div className="flex h-16 w-full items-center">
-            {/* Logo */}
-            <div className="shrink-0">
-              <Link
-                href="/"
-                onClick={() => {
-                  setSearchText("");
-                  setSuggestions([]);
-                }}
-              >
-                <img
-                  src="/logo.png"
-                  alt="Logo"
-                  className="h-16"
-                />
-              </Link>
-            </div>
 
-            {/* Desktop navigation and search */}
-            <div className="hidden flex-1 items-center justify-center gap-6 lg:gap-8 px-4 md:flex">
+      <nav className="relative z-40 bg-white shadow-md">
+        <div className="mx-auto w-full max-w-none px-3 sm:px-6 lg:px-8 xl:px-10">
+          <div className="flex min-h-16 w-full items-center justify-between gap-4">
+
+            {/* LOGO */}
+            <Link
+              href="/"
+              className="flex shrink-0 items-center"
+              onClick={() => {
+                setSearchText("");
+                setSuggestions([]);
+                setMobileMenuOpen(false);
+              }}
+            >
+              <img
+                src="/logo.png"
+                alt="Internarea"
+                className="h-12 w-auto object-contain sm:h-14"
+              />
+            </Link>
+
+            {/* DESKTOP NAVIGATION */}
+            <div className="hidden min-w-0 flex-1 items-center justify-start gap-4 px-4 xl:flex 2xl:gap-6">
+
               <Link
                 href="/internship"
-                className="text-gray-700 hover:text-blue-600"
+                className="whitespace-nowrap font-medium text-gray-700 transition hover:text-blue-600"
               >
                 {t.internships}
               </Link>
 
               <Link
                 href="/job"
-                className="text-gray-700 hover:text-blue-600"
+                className="whitespace-nowrap font-medium text-gray-700 transition hover:text-blue-600"
               >
                 {t.jobs}
               </Link>
 
               <Link
                 href="/public-space"
-                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white transition hover:bg-indigo-700"
+                className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white transition hover:bg-indigo-700"
               >
                 <Users size={18} />
                 {t.publicSpace}
               </Link>
-              {/* Search */}
-              <div className="relative">
+
+              {/* DESKTOP SEARCH */}
+              <div className="relative min-w-0">
                 <div className="flex items-center rounded-full bg-gray-100 px-4 py-2">
                   <button
                     type="button"
                     onClick={() => handleSearch()}
                     aria-label={t.search}
-                    className="focus:outline-none"
                   >
-                    <Search
-                      size={16}
-                      className="text-gray-400 hover:text-blue-600"
-                    />
+                    <Search size={17} className="text-gray-500" />
                   </button>
 
                   <input
                     type="text"
                     value={searchText}
-                    onChange={(event) =>
-                      setSearchText(event.target.value)
-                    }
+                    onChange={(event) => setSearchText(event.target.value)}
                     onKeyDown={handleSearchKeyDown}
                     placeholder={t.search}
-                    className="ml-2 w-48 bg-transparent text-sm text-gray-700 placeholder:text-gray-500 focus:outline-none"
+                    className="ml-2 w-32 bg-transparent text-sm text-gray-700 outline-none 2xl:w-52"
                   />
                 </div>
 
-                {searchText.trim() &&
-                  suggestions.length > 0 && (
-                    <div className="absolute left-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
-                      {suggestions.map(
-                        (suggestion, index) => (
-                          <button
-                            key={`${suggestion}-${index}`}
-                            type="button"
-                            onClick={() =>
-                              handleSearch(suggestion)
-                            }
-                            className="w-full border-b px-4 py-3 text-left text-sm text-gray-700 last:border-b-0 hover:bg-blue-50 hover:text-blue-600"
-                          >
-                            <Search
-                              size={14}
-                              className="mr-2 inline"
-                            />
-                            {suggestion}
-                          </button>
-                        )
-                      )}
-                    </div>
-                  )}
+                {searchText.trim() && suggestions.length > 0 && (
+                  <div className="absolute left-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+                    {suggestions.map((suggestion, index) => (
+                      <button
+                        key={`${suggestion}-${index}`}
+                        type="button"
+                        onClick={() => handleSearch(suggestion)}
+                        className="w-full border-b px-4 py-3 text-left text-sm text-gray-700 last:border-0 hover:bg-blue-50 hover:text-blue-600"
+                      >
+                        <Search size={14} className="mr-2 inline" />
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Language and authentication */}
-            <div className="ml-auto flex shrink-0 items-center gap-3">
+            {/* DESKTOP LANGUAGE */}
+            <div className="hidden shrink-0 xl:block">
               <select
                 value={language}
                 onChange={handleLanguageChange}
                 aria-label={t.language}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none"
               >
                 <option value="en">English</option>
                 <option value="es">Español</option>
@@ -1055,34 +1238,31 @@ const Navbar = () => {
                 <option value="zh">中文</option>
                 <option value="fr">Français</option>
               </select>
+            </div>
+
+            {/* DESKTOP AUTHENTICATION */}
+            <div className="hidden shrink-0 items-center gap-2 xl:flex 2xl:gap-3">
 
               {user ? (
-                <div className="flex items-center space-x-4">
+                <>
                   <Link
                     href="/profile"
-                    className="flex items-center space-x-2"
+                    className="flex items-center gap-2 text-gray-700 hover:text-blue-600"
                   >
                     {user.photo ? (
                       <img
                         src={user.photo}
                         alt={user.name || t.profile}
                         referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.style.display =
-                            "none";
-                        }}
                         className="h-8 w-8 rounded-full object-cover"
                       />
                     ) : (
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200">
-                        <User
-                          size={18}
-                          className="text-gray-500"
-                        />
-                      </div>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200">
+                        <User size={18} />
+                      </span>
                     )}
 
-                    <span className="hidden text-gray-700 lg:block">
+                    <span className="max-w-28 truncate">
                       {user.name}
                     </span>
                   </Link>
@@ -1091,95 +1271,249 @@ const Navbar = () => {
                     type="button"
                     onClick={handleLogout}
                     disabled={authLoading}
-                    className="rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                    className="rounded-lg px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                   >
                     {authLoading ? t.loading : t.logout}
                   </button>
-                </div>
+                </>
               ) : (
-                <div className="flex shrink-0 items-center gap-3">
+                <>
                   <button
                     type="button"
                     onClick={openLoginModal}
                     disabled={authLoading}
-                    className="flex items-center justify-center space-x-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
                   >
-                    <LogIn size={18} />
-                    <span>
-                      {authLoading ? t.loading : t.login}
-                    </span>
+                    <LogIn size={17} />
+                    {authLoading ? t.loading : t.login}
                   </button>
 
                   <button
                     type="button"
                     onClick={handleLogin}
                     disabled={authLoading}
-                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
+                    className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                   >
-                    <svg
-                      className="h-5 w-5"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                    >
-                      <path
-                        fill="#4285F4"
-                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.75h3.57c2.09-1.92 3.28-4.74 3.28-8.07z"
-                      />
-                      <path
-                        fill="#34A853"
-                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.15v2.84C3.96 20.53 7.69 23 12 23z"
-                      />
-                      <path
-                        fill="#FBBC05"
-                        d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.15C1.41 8.55 1 10.22 1 12s.41 3.45 1.15 4.94l3.69-2.84z"
-                      />
-                      <path
-                        fill="#EA4335"
-                        d="M12 5.38c1.62 0 3.07.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.69 1 3.96 3.47 2.15 7.06l3.69 2.84C6.71 7.31 9.14 5.38 12 5.38z"
-                      />
-                    </svg>
-
-                    <span className="text-gray-700">
-                      {authLoading
-                        ? t.loading
-                        : t.continueGoogle}
-                    </span>
+                    <GoogleIcon />
+                    {authLoading ? t.loading : t.continueGoogle}
                   </button>
 
                   <Link
                     href="/adminlogin"
-                    className="text-gray-600 hover:text-gray-800"
+                    className="whitespace-nowrap text-sm text-gray-600 hover:text-gray-900"
                   >
                     {t.admin}
                   </Link>
+                </>
+              )}
+            </div>
+
+            {/* MOBILE MENU BUTTON */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={mobileMenuOpen}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition hover:bg-gray-100 xl:hidden"
+            >
+              {mobileMenuOpen ? <X size={23} /> : <Menu size={23} />}
+            </button>
+          </div>
+        </div>
+
+        {/* MOBILE EXPANDABLE MENU */}
+        {mobileMenuOpen && (
+          <div className="border-t border-gray-100 bg-white px-4 pb-5 pt-4 shadow-lg xl:hidden">
+
+            {/* MOBILE NAVIGATION LINKS */}
+            <div className="grid grid-cols-2 gap-3">
+
+              <Link
+                href="/internship"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-semibold text-gray-700 hover:bg-blue-50 hover:text-blue-600"
+              >
+                {t.internships}
+              </Link>
+
+              <Link
+                href="/job"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-semibold text-gray-700 hover:bg-blue-50 hover:text-blue-600"
+              >
+                {t.jobs}
+              </Link>
+
+              <Link
+                href="/public-space"
+                onClick={() => setMobileMenuOpen(false)}
+                className="col-span-2 flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-3 py-3 text-sm font-semibold text-white hover:bg-indigo-700"
+              >
+                <Users size={18} />
+                {t.publicSpace}
+              </Link>
+
+            </div>
+
+            {/* MOBILE SEARCH */}
+            <div className="relative mt-4">
+              <div className="flex items-center rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
+                <Search size={19} className="shrink-0 text-gray-500" />
+
+                <input
+                  type="text"
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder={t.search}
+                  className="ml-3 min-w-0 flex-1 bg-transparent text-sm text-gray-800 outline-none"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleSearch();
+                    setMobileMenuOpen(false);
+                  }}
+                  className="ml-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  {t.search}
+                </button>
+              </div>
+
+              {searchText.trim() && suggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+                  {suggestions.map((suggestion, index) => (
+                    <button
+                      key={`${suggestion}-${index}`}
+                      type="button"
+                      onClick={() => {
+                        handleSearch(suggestion);
+                        setMobileMenuOpen(false);
+                      }}
+                      className="w-full border-b px-4 py-3 text-left text-sm text-gray-700 last:border-0 hover:bg-blue-50"
+                    >
+                      <Search size={14} className="mr-2 inline" />
+                      {suggestion}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
 
-            {/* Mobile icon */}
-            {/* Mobile navigation */}
-            <div className="flex items-center gap-3 md:hidden">
-              <Link
-                href="/public-space"
-                aria-label={t.publicSpace}
-                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white"
-              >
-                <Users size={18} />
-                <span>{t.publicSpace}</span>
-              </Link>
+            {/* MOBILE LANGUAGE */}
+            <div className="mt-4">
+              <label className="mb-2 block text-sm font-semibold text-gray-700">
+                {t.language}
+              </label>
 
-              <button
-                type="button"
-                onClick={user ? () => void router.push("/profile") : openLoginModal}
-                className="text-gray-600"
-                aria-label={t.profile}
+              <select
+                value={language}
+                onChange={handleLanguageChange}
+                className="w-full rounded-xl border border-gray-300 bg-white px-3 py-3 text-sm text-gray-700 outline-none"
               >
-                <User size={24} />
-              </button>
+                <option value="en">English</option>
+                <option value="es">Español</option>
+                <option value="hi">हिन्दी</option>
+                <option value="pt">Português</option>
+                <option value="zh">中文</option>
+                <option value="fr">Français</option>
+              </select>
+            </div>
+
+            {/* MOBILE ACCOUNT */}
+            <div className="mt-4 border-t border-gray-100 pt-4">
+
+              {user ? (
+                <div className="space-y-3">
+
+                  <Link
+                    href="/profile"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 rounded-xl bg-gray-50 p-3"
+                  >
+                    {user.photo ? (
+                      <img
+                        src={user.photo}
+                        alt={user.name || t.profile}
+                        referrerPolicy="no-referrer"
+                        className="h-10 w-10 rounded-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-200">
+                        <User size={21} />
+                      </span>
+                    )}
+
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-gray-800">
+                        {user.name}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        {t.profile}
+                      </span>
+                    </span>
+                  </Link>
+
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      void handleLogout();
+                    }}
+                    disabled={authLoading}
+                    className="w-full rounded-xl bg-red-50 px-4 py-3 font-semibold text-red-600 transition hover:bg-red-100 disabled:opacity-50"
+                  >
+                    {authLoading ? t.loading : t.logout}
+                  </button>
+
+
+                </div>
+              ) : (
+                <div className="space-y-3">
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      openLoginModal();
+                    }}
+                    disabled={authLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <LogIn size={18} />
+                    {authLoading ? t.loading : t.login}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      void handleLogin();
+                    }}
+                    disabled={authLoading}
+                    className="flex w-full items-center justify-center gap-3 rounded-xl border border-gray-300 px-4 py-3 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <GoogleIcon />
+                    {authLoading ? t.loading : t.continueGoogle}
+                  </button>
+
+                  <Link
+                    href="/adminlogin"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block py-2 text-center text-sm font-medium text-gray-600 hover:text-blue-600"
+                  >
+                    {t.admin}
+                  </Link>
+
+                </div>
+              )}
             </div>
           </div>
-        </div>
+        )}
       </nav>
+
 
       {/* Login and Create Account modal */}
       {showLoginModal && (
@@ -1454,8 +1788,8 @@ const Navbar = () => {
                   setUsernameError("");
                 }}
                 className={`rounded-lg border p-3 text-sm font-semibold ${usernameMode === "custom"
-                    ? "border-blue-600 bg-blue-50 text-blue-700"
-                    : "border-gray-300 text-gray-700"
+                  ? "border-blue-600 bg-blue-50 text-blue-700"
+                  : "border-gray-300 text-gray-700"
                   }`}
               >
                 Create my own
@@ -1469,8 +1803,8 @@ const Navbar = () => {
                   setUsernameError("");
                 }}
                 className={`rounded-lg border p-3 text-sm font-semibold ${usernameMode === "generate"
-                    ? "border-blue-600 bg-blue-50 text-blue-700"
-                    : "border-gray-300 text-gray-700"
+                  ? "border-blue-600 bg-blue-50 text-blue-700"
+                  : "border-gray-300 text-gray-700"
                   }`}
               >
                 Generate for me

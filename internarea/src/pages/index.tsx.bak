@@ -1,0 +1,489 @@
+
+import { useEffect, useState } from "react";
+import { Swiper, SwiperSlide } from "swiper/react";
+import { Navigation, Pagination, Autoplay } from "swiper/modules";
+import "swiper/css";
+import "swiper/css/navigation";
+import "swiper/css/pagination";
+
+import {
+  ArrowUpRight,
+  ChevronRight,
+  MapPin,
+  Banknote,
+  Calendar,
+  Briefcase,
+  Search,
+  FileText,
+  Sparkles,
+  GraduationCap,
+} from "lucide-react";
+
+import Link from "next/link";
+import axios from "axios";
+import { useLanguage } from "../../context/LanguageContext";
+
+type Category = {
+  value: string;
+  label: string;
+};
+
+export default function SvgSlider() {
+  const { t } = useLanguage();
+
+  const [internships, setInternships] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const categories: Category[] = [
+    { value: "Big Brands", label: t.homeCategoryBigBrands },
+    { value: "Work From Home", label: t.homeCategoryRemote },
+    { value: "Part-time", label: t.homeCategoryPartTime },
+    { value: "MBA", label: t.homeCategoryMBA },
+    { value: "Engineering", label: t.homeCategoryEngineering },
+    { value: "Media", label: t.homeCategoryMedia },
+    { value: "Design", label: t.homeCategoryDesign },
+    { value: "Data Science", label: t.homeCategoryDataScience },
+  ];
+
+  const slides = [
+    {
+      title: t.homeSlideOne,
+      subtitle: t.homeSlideOneSubtitle,
+      bg: "from-indigo-700 via-blue-700 to-indigo-900",
+    },
+    {
+      title: t.homeSlideTwo,
+      subtitle: t.homeSlideTwoSubtitle,
+      bg: "from-blue-700 via-cyan-700 to-blue-900",
+    },
+    {
+      title: t.homeSlideThree,
+      subtitle: t.homeSlideThreeSubtitle,
+      bg: "from-purple-700 via-violet-700 to-indigo-900",
+    },
+    {
+      title: t.homeSlideFour,
+      subtitle: t.homeSlideFourSubtitle,
+      bg: "from-teal-700 via-emerald-700 to-teal-900",
+    },
+  ];
+
+  const stats = [
+    { number: "30K+", label: t.homeStatCompanies },
+    { number: "10K+", label: t.homeStatOpenings },
+    { number: "21M+", label: t.homeStatStudents },
+    { number: "600K+", label: t.homeStatLearners },
+  ];
+
+  useEffect(() => {
+    let active = true;
+
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+
+        const [internshipRes, jobsRes] = await Promise.all([
+          axios.get(
+            "https://internshala-clone-a0st.onrender.com/api/internship"
+          ),
+          axios.get(
+            "https://internshala-clone-a0st.onrender.com/api/job"
+          ),
+        ]);
+
+        if (active) {
+          setInternships(
+            Array.isArray(internshipRes.data)
+              ? internshipRes.data
+              : []
+          );
+
+          setJobs(
+            Array.isArray(jobsRes.data) ? jobsRes.data : []
+          );
+        }
+      } catch (error) {
+        console.error("Home page data error:", error);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const filteredInternships = internships.filter(
+    (item) =>
+      !selectedCategory ||
+      item.category === selectedCategory
+  );
+
+  const filteredJobs = jobs.filter(
+    (item) =>
+      !selectedCategory ||
+      item.category === selectedCategory
+  );
+
+  return (
+    <main className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+
+        {/* HERO */}
+        <section className="relative mb-12 overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-700 via-blue-700 to-violet-800 px-6 py-16 text-center text-white shadow-xl sm:px-12">
+          <div className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-white/10 blur-2xl" />
+          <div className="absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-cyan-300/10 blur-2xl" />
+
+          <div className="relative mx-auto max-w-3xl">
+            <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium backdrop-blur">
+              <Sparkles size={16} />
+              {t.homeHeroBadge}
+            </span>
+
+            <h1 className="mb-5 text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
+              {t.homeHeroTitle}
+            </h1>
+
+            <p className="mx-auto mb-8 max-w-2xl text-base leading-7 text-blue-100 sm:text-xl">
+              {t.homeHeroDescription}
+            </p>
+
+            <div className="flex flex-wrap justify-center gap-4">
+              <Link
+                href="/internship"
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 font-bold text-indigo-700 shadow-lg transition hover:-translate-y-1 hover:bg-blue-50"
+              >
+                <Search size={19} />
+                {t.homeExploreInternships}
+              </Link>
+
+              <Link
+                href="/job"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/40 bg-white/10 px-6 py-3 font-bold text-white backdrop-blur transition hover:-translate-y-1 hover:bg-white/20"
+              >
+                {t.homeExploreJobs}
+                <ArrowUpRight size={19} />
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* RESUME BUILDER */}
+        <section className="mb-14 overflow-hidden rounded-3xl border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 shadow-sm">
+          <div className="grid items-center gap-8 p-7 sm:p-10 md:grid-cols-[1fr_auto]">
+            <div>
+              <span className="mb-3 inline-flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1.5 text-sm font-semibold text-blue-700">
+                <FileText size={16} />
+                {t.homeResumeBadge}
+              </span>
+
+              <h2 className="mb-3 text-2xl font-extrabold text-slate-900 sm:text-3xl">
+                {t.homeResumeTitle}
+              </h2>
+
+              <p className="mb-6 max-w-2xl leading-7 text-slate-600">
+                {t.homeResumeDescription}
+              </p>
+
+              <Link
+                href="/resumebuilder"
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white shadow-md transition hover:-translate-y-1 hover:bg-blue-700"
+              >
+                {t.homeBuildResume}
+                <ArrowUpRight size={19} />
+              </Link>
+            </div>
+
+            <div className="hidden h-36 w-36 items-center justify-center rounded-3xl bg-white text-blue-600 shadow-lg md:flex">
+              <FileText size={76} strokeWidth={1.3} />
+            </div>
+          </div>
+        </section>
+
+        {/* SLIDER */}
+        <section className="mb-16">
+          <Swiper
+            modules={[Navigation, Pagination, Autoplay]}
+            spaceBetween={24}
+            slidesPerView={1}
+            navigation
+            pagination={{ clickable: true }}
+            autoplay={{
+              delay: 4500,
+              disableOnInteraction: false,
+            }}
+            loop
+            className="overflow-hidden rounded-3xl shadow-lg"
+          >
+            {slides.map((slide, index) => (
+              <SwiperSlide key={index}>
+                <div
+                  className={`relative flex min-h-[300px] items-center justify-center overflow-hidden bg-gradient-to-br ${slide.bg} px-6 py-12 text-center text-white sm:min-h-[360px]`}
+                >
+                  <div className="absolute inset-0 opacity-10">
+                    <div className="absolute -left-10 top-10 h-52 w-52 rounded-full border-[35px] border-white" />
+                    <div className="absolute -bottom-24 right-10 h-72 w-72 rounded-full border-[45px] border-white" />
+                  </div>
+
+                  <div className="relative max-w-3xl">
+                    <GraduationCap
+                      size={42}
+                      className="mx-auto mb-5 text-white/90"
+                    />
+
+                    <h2 className="mb-4 text-3xl font-extrabold sm:text-5xl">
+                      {slide.title}
+                    </h2>
+
+                    <p className="text-base text-white/85 sm:text-lg">
+                      {slide.subtitle}
+                    </p>
+                  </div>
+                </div>
+              </SwiperSlide>
+            ))}
+          </Swiper>
+        </section>
+
+        {/* CATEGORIES */}
+        <section className="mb-14">
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <span className="text-sm font-bold uppercase tracking-wider text-blue-600">
+                {t.homeCategoryEyebrow}
+              </span>
+
+              <h2 className="mt-2 text-2xl font-extrabold text-slate-900 sm:text-3xl">
+                {t.homeLatestInternships}
+              </h2>
+            </div>
+
+            <button
+              onClick={() => setSelectedCategory("")}
+              className="text-sm font-semibold text-blue-600 hover:text-blue-800"
+            >
+              {t.homeClearFilter}
+            </button>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            {categories.map((category) => (
+              <button
+                key={category.value}
+                onClick={() =>
+                  setSelectedCategory(
+                    selectedCategory === category.value
+                      ? ""
+                      : category.value
+                  )
+                }
+                className={`rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
+                  selectedCategory === category.value
+                    ? "border-blue-600 bg-blue-600 text-white shadow-md"
+                    : "border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50"
+                }`}
+              >
+                {category.label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {/* INTERNSHIPS */}
+        <section className="mb-16">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-extrabold text-slate-900 sm:text-3xl">
+              {t.homeInternshipSection}
+            </h2>
+
+            <Link
+              href="/internship"
+              className="inline-flex items-center gap-1 text-sm font-bold text-blue-600 hover:text-blue-800"
+            >
+              {t.homeViewAll}
+              <ChevronRight size={18} />
+            </Link>
+          </div>
+
+          {loading ? (
+            <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm">
+              {t.homeLoading}
+            </p>
+          ) : filteredInternships.length === 0 ? (
+            <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm">
+              {t.homeNoInternships}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {filteredInternships.map((internship, index) => (
+                <article
+                  key={internship._id || index}
+                  className="group rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl"
+                >
+                  <div className="mb-5 flex items-center gap-2 text-sm font-bold text-emerald-600">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    {t.homeActivelyHiring}
+                  </div>
+
+                  <h3 className="mb-2 text-lg font-bold text-slate-900">
+                    {internship.title}
+                  </h3>
+
+                  <p className="mb-5 font-medium text-slate-500">
+                    {internship.company}
+                  </p>
+
+                  <div className="space-y-3 text-sm text-slate-600">
+                    <div className="flex items-center gap-3">
+                      <MapPin size={18} className="text-blue-600" />
+                      {internship.location || t.homeNotSpecified}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Banknote size={18} className="text-blue-600" />
+                      {internship.stipend || t.homeNotSpecified}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Calendar size={18} className="text-blue-600" />
+                      {internship.startDate ||
+                        internship.StartDate ||
+                        t.homeNotSpecified}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-5">
+                    <span className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700">
+                      {t.homeInternshipTag}
+                    </span>
+
+                    <Link
+                      href={`/detailinternship/${internship._id}`}
+                      className="inline-flex items-center gap-1 font-bold text-blue-600 transition group-hover:gap-2"
+                    >
+                      {t.homeViewDetails}
+                      <ChevronRight size={17} />
+                    </Link>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* JOBS */}
+        <section className="mb-16">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-extrabold text-slate-900 sm:text-3xl">
+              {t.homeLatestJobs}
+            </h2>
+
+            <Link
+              href="/job"
+              className="inline-flex items-center gap-1 text-sm font-bold text-blue-600 hover:text-blue-800"
+            >
+              {t.homeViewAll}
+              <ChevronRight size={18} />
+            </Link>
+          </div>
+
+          {loading ? (
+            <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm">
+              {t.homeLoading}
+            </p>
+          ) : filteredJobs.length === 0 ? (
+            <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm">
+              {t.homeNoJobs}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {filteredJobs.map((job, index) => (
+                <article
+                  key={job._id || index}
+                  className="group rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl"
+                >
+                  <div className="mb-5 flex items-center gap-2 text-sm font-bold text-emerald-600">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    {t.homeActivelyHiring}
+                  </div>
+
+                  <h3 className="mb-2 text-lg font-bold text-slate-900">
+                    {job.title}
+                  </h3>
+
+                  <p className="mb-5 font-medium text-slate-500">
+                    {job.company}
+                  </p>
+
+                  <div className="space-y-3 text-sm text-slate-600">
+                    <div className="flex items-center gap-3">
+                      <MapPin size={18} className="text-blue-600" />
+                      {job.location || t.homeNotSpecified}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Banknote size={18} className="text-blue-600" />
+                      {job.CTC || t.homeNotSpecified}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Briefcase size={18} className="text-blue-600" />
+                      {job.category || t.homeNotSpecified}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-5">
+                    <span className="rounded-full bg-violet-50 px-3 py-1.5 text-xs font-bold text-violet-700">
+                      {t.homeJobTag}
+                    </span>
+
+                    <Link
+                      href={`/detailjob/${job._id}`}
+                      className="inline-flex items-center gap-1 font-bold text-blue-600 transition group-hover:gap-2"
+                    >
+                      {t.homeViewDetails}
+                      <ChevronRight size={17} />
+                    </Link>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* STATS */}
+        <section className="mb-10 rounded-3xl bg-white p-8 shadow-sm sm:p-10">
+          <div className="mb-8 text-center">
+            <h2 className="text-2xl font-extrabold text-slate-900">
+              {t.homeStatsTitle}
+            </h2>
+
+            <p className="mt-2 text-slate-500">
+              {t.homeStatsDescription}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
+            {stats.map((stat, index) => (
+              <div key={index} className="text-center">
+                <div className="mb-2 text-3xl font-extrabold text-blue-600 sm:text-4xl">
+                  {stat.number}
+                </div>
+
+                <div className="text-sm font-medium text-slate-600 sm:text-base">
+                  {stat.label}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+      </div>
+    </main>
+  );
+}
