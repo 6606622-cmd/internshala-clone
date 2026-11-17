@@ -10,6 +10,7 @@ const PasswordResetChallenge = require("../PasswordResetChallenge");
 const PasswordResetCooldown = require("../PasswordResetCooldown");
 
 const router = express.Router();
+const ContactPhoneVerificationChallenge = require("../ContactPhoneVerificationChallenge");
 const auth = getAuth(adminApp);
 const PhonePasswordResetChallenge = require("../PhonePasswordResetChallenge");
 
@@ -1675,8 +1676,10 @@ router.post("/phone/contact", async (req, res) => {
       });
     }
 
-    profile.contactPhoneNumber = phoneNumber;
-    profile.contactPhoneVerified = false;
+    if (profile.contactPhoneNumber !== phoneNumber) {
+  profile.contactPhoneNumber = phoneNumber;
+  profile.contactPhoneVerified = false;
+}
 
     await profile.save();
 
@@ -1684,7 +1687,7 @@ router.post("/phone/contact", async (req, res) => {
       success: true,
       message: "Mobile contact number saved successfully.",
       contactPhoneNumber: phoneNumber,
-      contactPhoneVerified: false,
+     contactPhoneVerified: profile.contactPhoneVerified === true, 
     });
   } catch (error) {
     console.error("Contact phone save error:", error);
@@ -1737,6 +1740,355 @@ router.get("/phone/contact", async (req, res) => {
     });
   }
 });
+
+
+const CONTACT_WIDGET_SESSION_EXPIRY_MS = 20 * 60 * 1000;
+
+// Authenticate the Firebase user and load their InternArea profile.
+async function getAuthenticatedContactProfile(req) {
+  const authorization = req.headers.authorization || "";
+  const idToken = authorization.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+
+  if (!idToken) {
+    const error = new Error("Please sign in again.");
+    error.status = 401;
+    throw error;
+  }
+
+  const decoded = await auth.verifyIdToken(idToken, true);
+
+  const profile = await UserProfile.findOne({
+    firebaseUid: decoded.uid,
+  });
+
+  if (!profile) {
+    const error = new Error("InternArea profile not found.");
+    error.status = 404;
+    throw error;
+  }
+
+  return { decoded, profile };
+}
+
+function normalizePhoneForComparison(value) {
+  return typeof value === "string"
+    ? value.replace(/\D/g, "")
+    : "";
+}
+
+// Validate the access token with MSG91.
+// The account Authkey must remain on the backend.
+async function verifyMsg91WidgetAccessToken(accessToken) {
+  const authKey = process.env.MSG91_AUTHKEY;
+
+  if (!authKey) {
+    throw new Error("MSG91_AUTHKEY is not configured.");
+  }
+
+  const response = await fetch(
+    "https://control.msg91.com/api/v5/widget/verifyAccessToken",
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        authkey: authKey,
+        "access-token": accessToken,
+      }),
+      signal: AbortSignal.timeout(20000),
+    }
+  );
+
+  const result = await response.json().catch(() => ({}));
+
+  // MSG91 may return HTTP 200 with an error in the response body.
+  if (!response.ok || result.type !== "success") {
+    console.error(
+      "MSG91 access-token verification failed:",
+      response.status,
+      result.message || result.type || "Unknown error"
+    );
+
+    throw new Error("MSG91 could not verify the access token.");
+  }
+
+  // MSG91's successful response identifies the verified number.
+  const verifiedIdentifier =
+    typeof result.message === "string"
+      ? result.message
+      : result.data?.identifier;
+
+  if (!verifiedIdentifier) {
+    throw new Error(
+      "MSG91 did not return the verified mobile number."
+    );
+  }
+
+  return verifiedIdentifier;
+}
+
+
+// CREATE A CONTACT VERIFICATION SESSION
+// The frontend sends the OTP through the MSG91 Web SDK.
+router.post("/phone/contact/request", async (req, res) => {
+  try {
+    const { decoded, profile } =
+      await getAuthenticatedContactProfile(req);
+
+    const phoneNumber = profile.contactPhoneNumber;
+
+    if (!phoneNumber || !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Save a valid contact number first.",
+      });
+    }
+
+    if (profile.contactPhoneVerified === true) {
+      return res.json({
+        success: true,
+        verified: true,
+        message: "This mobile number is already verified.",
+      });
+    }
+
+    const sessionId = crypto.randomBytes(32).toString("hex");
+    const now = new Date();
+
+    const expiresAt = new Date(
+      now.getTime() + CONTACT_WIDGET_SESSION_EXPIRY_MS
+    );
+
+    await ContactPhoneVerificationChallenge.findOneAndUpdate(
+      { firebaseUid: decoded.uid },
+      {
+        $set: {
+          firebaseUid: decoded.uid,
+          phoneNumber,
+          channel: "sms",
+          sessionId,
+          attempts: 0,
+          expiresAt,
+          verifiedAt: null,
+          consumedAt: null,
+        },
+        $unset: {
+          accessTokenHash: "",
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      sessionId,
+      expiresAt,
+      message: "Verification session created.",
+    });
+  } catch (error) {
+    console.error(
+      "Contact verification session creation failed:",
+      error.code || error.message
+    );
+
+    return res.status(error.status || 500).json({
+      success: false,
+      message:
+        error.status
+          ? error.message
+          : "Unable to start mobile verification.",
+    });
+  }
+});
+
+
+// VERIFY THE MSG91 WIDGET ACCESS TOKEN
+router.post("/phone/contact/verify", async (req, res) => {
+  try {
+    const { decoded, profile } =
+      await getAuthenticatedContactProfile(req);
+
+    const sessionId =
+      typeof req.body?.sessionId === "string"
+        ? req.body.sessionId.trim()
+        : "";
+
+    const accessToken =
+      typeof req.body?.accessToken === "string"
+        ? req.body.accessToken.trim()
+        : "";
+
+    if (
+      !/^[a-f0-9]{64}$/i.test(sessionId) ||
+      !accessToken ||
+      accessToken.length > 10000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification session.",
+      });
+    }
+
+    const now = new Date();
+
+    const challenge =
+      await ContactPhoneVerificationChallenge.findOne({
+        firebaseUid: decoded.uid,
+        sessionId,
+        phoneNumber: profile.contactPhoneNumber,
+        channel: "sms",
+        verifiedAt: null,
+        consumedAt: null,
+        expiresAt: { $gt: now },
+      });
+
+    if (!challenge) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Your verification session is invalid or expired. Request a new OTP.",
+      });
+    }
+
+    // Ask MSG91 to validate the token generated by its OTP Widget.
+    let verifiedPhone;
+
+    try {
+      verifiedPhone =
+        await verifyMsg91WidgetAccessToken(accessToken);
+    } catch (providerError) {
+      console.error(
+        "MSG91 verification error:",
+        providerError.message
+      );
+
+      return res.status(502).json({
+        success: false,
+        message:
+          "MSG91 verification is temporarily unavailable. Please try again.",
+      });
+    }
+
+    // Never trust a phone number sent by the browser.
+    // Compare MSG91's verified identifier with the saved profile number.
+    if (
+      normalizePhoneForComparison(verifiedPhone) !==
+      normalizePhoneForComparison(challenge.phoneNumber)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "The verified mobile number does not match your saved contact number.",
+      });
+    }
+
+    // Store only a hash of the access token, never the original token.
+    const accessTokenHash = crypto
+      .createHash("sha256")
+      .update(accessToken)
+      .digest("hex");
+
+    const verifiedAt = new Date();
+
+    // Atomically consume the session so it cannot be reused.
+    const claimed =
+      await ContactPhoneVerificationChallenge.findOneAndUpdate(
+        {
+          _id: challenge._id,
+          firebaseUid: decoded.uid,
+          sessionId,
+          phoneNumber: challenge.phoneNumber,
+          verifiedAt: null,
+          consumedAt: null,
+          expiresAt: { $gt: verifiedAt },
+        },
+        {
+          $set: {
+            accessTokenHash,
+            verifiedAt,
+            consumedAt: verifiedAt,
+          },
+        },
+        { new: true }
+      );
+
+    if (!claimed) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This verification session has already been used or expired.",
+      });
+    }
+
+    // Only verify the number if it is still the saved contact number.
+    const updatedProfile = await UserProfile.findOneAndUpdate(
+      {
+        _id: profile._id,
+        contactPhoneNumber: challenge.phoneNumber,
+        contactPhoneVerified: { $ne: true },
+      },
+      {
+        $set: {
+          contactPhoneVerified: true,
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedProfile) {
+      // Check whether another simultaneous request already verified it.
+      const latestProfile = await UserProfile.findById(profile._id);
+
+      if (
+        latestProfile?.contactPhoneNumber !== challenge.phoneNumber ||
+        latestProfile?.contactPhoneVerified !== true
+      ) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Your contact number changed. Verify the current number instead.",
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      contactPhoneNumber: challenge.phoneNumber,
+      contactPhoneVerified: true,
+      message: "Mobile number verified successfully.",
+    });
+  } catch (error) {
+    console.error(
+      "Contact phone verification failed:",
+      error.code || error.message
+    );
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "This verification token has already been used.",
+      });
+    }
+
+    return res.status(error.status || 500).json({
+      success: false,
+      message:
+        error.status
+          ? error.message
+          : "Unable to verify the mobile number.",
+    });
+  }
+});
+
 
 // -----------------------------------------------------------------------------
 // COMPLETE A FORCED PASSWORD CHANGE AFTER LOGIN
