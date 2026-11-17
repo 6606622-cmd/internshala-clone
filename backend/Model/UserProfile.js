@@ -36,6 +36,33 @@ const userProfileSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    // Verified mobile number in E.164 format.
+    phoneNumber: {
+      type: String,
+      default: null,
+      trim: true,
+      match: /^\+[1-9]\d{7,14}$/,
+      unique: true,
+      sparse: true,
+    },
+
+    // True only after successful Firebase phone verification.
+    phoneVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    contactPhoneNumber: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    contactPhoneVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

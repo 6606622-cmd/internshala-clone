@@ -10,6 +10,8 @@ const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 const LoginActivity = require("../LoginActivity");
 const LoginOtp = require("../LoginOtp");
 const LoginSession = require("../LoginSession");
+const UserProfile = require("../UserProfile");
+const LoginWakitChallenge = require("../LoginWakitChallenge");
 
 const router = express.Router();
 
@@ -153,7 +155,74 @@ async function createLoginSession({
     sessionId: session.sessionId,
     sessionToken,
   };
-}// --------------------------------------------------
+
+}
+
+  
+const WAKIT_BASE_URL = "https://wakit.in/api/v1";
+
+async function sendLoginOtpWhatsApp(phoneNumber) {
+  const apiKey = process.env.WAKIT_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("WAKIT_API_KEY is not configured");
+  }
+
+  const response = await axios.post(
+    `${WAKIT_BASE_URL}/otp/send`,
+    {
+      to: phoneNumber,
+      code_length: 6,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 20000,
+    }
+  );
+
+  const challengeId =
+    response.data?.id ||
+    response.data?.data?.id;
+
+  if (
+    response.data?.success !== true ||
+    !challengeId
+  ) {
+    throw new Error("Wakit did not return a valid OTP challenge ID");
+  }
+
+  return challengeId;
+}
+
+async function verifyLoginOtpWhatsApp(challengeId, otp) {
+  const apiKey = process.env.WAKIT_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("WAKIT_API_KEY is not configured");
+  }
+
+  const response = await axios.post(
+    `${WAKIT_BASE_URL}/otp/verify`,
+    {
+      id: challengeId,
+      code: otp,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 20000,
+    }
+  );
+
+  return response.data?.success === true;
+}
+
+// --------------------------------------------------
 // BREVO LOGIN OTP EMAIL
 // --------------------------------------------------
 
@@ -212,8 +281,6 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
   let stage = "initializing";
 
   try {
-    stage = "reading Firebase user";
-
     const uid = req.firebaseUser.uid;
     const email = req.firebaseUser.email || "";
     const userAgent = req.get("user-agent") || "";
@@ -222,72 +289,110 @@ router.post("/start", requireFirebaseAuth, async (req, res) => {
 
     stage = "creating login activity";
 
+    const profile = await UserProfile.findOne({
+      firebaseUid: uid,
+    }).select("phoneNumber phoneVerified");
+
+    const useWhatsApp = Boolean(
+      profile?.phoneVerified &&
+      profile?.phoneNumber
+    );
+
     activity = await LoginActivity.create({
       firebaseUid: uid,
       email,
       eventType: "LOGIN_ATTEMPT",
       loginStatus: "PENDING",
-      verificationMethod: "EMAIL_PASSWORD",
+      verificationMethod: useWhatsApp ? "PHONE" : "EMAIL_PASSWORD",
       verificationStatus: "PENDING",
       userAgent,
       ipAddress,
       ...deviceInfo,
     });
 
-    // Restrict mobile login to 10:00 AM–1:00 PM IST.
-// Desktop login remains allowed at any time.
-if (
-  deviceInfo.device.type === "mobile" &&
-  !isWithinMobileLoginHours()
-) {
-  activity.eventType = "LOGIN_BLOCKED";
-  activity.loginStatus = "BLOCKED";
-  activity.verificationStatus = "FAILED";
-  activity.failureReason =
-    "Mobile login is allowed only between 10:00 AM and 1:00 PM IST.";
+    if (
+      deviceInfo.device.type === "mobile" &&
+      !isWithinMobileLoginHours()
+    ) {
+      activity.eventType = "LOGIN_BLOCKED";
+      activity.loginStatus = "BLOCKED";
+      activity.verificationStatus = "FAILED";
+      activity.failureReason =
+        "Mobile login is allowed only between 10:00 AM and 1:00 PM IST.";
 
-  await activity.save();
+      await activity.save();
 
-  return res.status(403).json({
-    success: false,
-    code: "MOBILE_LOGIN_TIME_RESTRICTED",
-    message:
-      "Mobile login is available only between 10:00 AM and 1:00 PM IST.",
-  });
-}
+      return res.status(403).json({
+        success: false,
+        code: "MOBILE_LOGIN_TIME_RESTRICTED",
+        message:
+          "Mobile login is available only between 10:00 AM and 1:00 PM IST.",
+      });
+    }
 
-    // A registered email is mandatory for OTP verification.
+    await Promise.all([
+      LoginOtp.deleteMany({
+        firebaseUid: uid,
+        verifiedAt: null,
+      }),
+      LoginWakitChallenge.deleteMany({
+        firebaseUid: uid,
+        verifiedAt: null,
+      }),
+    ]);
+
+    if (useWhatsApp) {
+      stage = "sending Phone OTP through Wakit";
+
+      const challengeId = await sendLoginOtpWhatsApp(
+        profile.phoneNumber
+      );
+
+      stage = "saving Wakit challenge";
+
+      await LoginWakitChallenge.create({
+        firebaseUid: uid,
+        loginActivityId: activity._id,
+        wakitChallengeId: challengeId,
+        phoneNumber: profile.phoneNumber,
+        expiresAt: new Date(
+          Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000
+        ),
+      });
+
+      activity.eventType = "OTP_SENT";
+      await activity.save();
+
+      return res.json({
+        success: true,
+        otpRequired: true,
+        channel: "phone",
+        activityId: activity._id,
+        message: "Verification code sent to your registered WhatsApp number.",
+      });
+    }
+
+    // Existing email fallback for accounts without a verified phone.
     if (!email) {
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
       activity.verificationStatus = "FAILED";
       activity.failureReason =
-        "No registered email is available for verification.";
+        "No verified phone number or registered email is available.";
 
       await activity.save();
 
       return res.status(400).json({
         success: false,
-        code: "REGISTERED_EMAIL_REQUIRED",
+        code: "VERIFIED_PHONE_OR_EMAIL_REQUIRED",
         message:
-          "A registered email is required for login verification.",
+          "Add a verified phone number or registered email to continue.",
       });
     }
 
-    stage = "deleting previous OTP challenges";
+    stage = "generating email OTP";
 
-    await LoginOtp.deleteMany({
-      firebaseUid: uid,
-      verifiedAt: null,
-    });
-
-    stage = "generating OTP";
-
-    const otp = crypto
-      .randomInt(100000, 1000000)
-      .toString();
-
-    stage = "creating OTP challenge";
+    const otp = crypto.randomInt(100000, 1000000).toString();
 
     const challenge = await LoginOtp.create({
       firebaseUid: uid,
@@ -300,26 +405,10 @@ if (
     });
 
     try {
-      stage = "sending OTP through Brevo API";
-
+      stage = "sending email OTP";
       await sendLoginOtpEmail(email, otp);
     } catch (mailError) {
-      console.error("BREVO OTP DELIVERY FAILED:", {
-        message: mailError.message,
-        code: mailError.code,
-        response: mailError.response?.data,
-        status: mailError.response?.status,
-      });
-
-      try {
-        await LoginOtp.deleteOne({
-          _id: challenge._id,
-        });
-      } catch (cleanupError) {
-        console.error("FAILED TO CLEAN OTP CHALLENGE:", {
-          message: cleanupError.message,
-        });
-      }
+      await LoginOtp.deleteOne({ _id: challenge._id });
 
       activity.eventType = "LOGIN_BLOCKED";
       activity.loginStatus = "BLOCKED";
@@ -327,14 +416,13 @@ if (
       activity.failureReason =
         "Email verification could not be delivered.";
 
-      try {
-        await activity.save();
-      } catch (saveError) {
-        console.error("FAILED TO SAVE EMAIL DELIVERY FAILURE:", {
-          message: saveError.message,
-          name: saveError.name,
-        });
-      }
+      await activity.save();
+
+      console.error("LOGIN EMAIL OTP DELIVERY FAILED:", {
+        message: mailError.message,
+        status: mailError.response?.status,
+        response: mailError.response?.data,
+      });
 
       return res.status(502).json({
         success: false,
@@ -344,45 +432,37 @@ if (
       });
     }
 
+    activity.eventType = "OTP_SENT";
+    await activity.save();
+
     return res.json({
       success: true,
       otpRequired: true,
+      channel: "email",
       activityId: activity._id,
-      message:
-        "Verification code sent to your registered email.",
+      message: "Verification code sent to your registered email.",
     });
-
   } catch (error) {
     console.error("LOGIN SECURITY START FAILED:", {
       stage,
       message: error.message,
-      code: error.code,
-      name: error.name,
-      stack: error.stack,
+      status: error.response?.status,
       response: error.response?.data,
     });
 
     if (activity) {
-      try {
-        activity.eventType = "LOGIN_BLOCKED";
-        activity.loginStatus = "BLOCKED";
-        activity.verificationStatus = "FAILED";
-        activity.failureReason =
-          "Unable to start login verification.";
+      activity.eventType = "LOGIN_BLOCKED";
+      activity.loginStatus = "BLOCKED";
+      activity.verificationStatus = "FAILED";
+      activity.failureReason =
+        "Unable to start login verification.";
 
-        await activity.save();
-      } catch (saveError) {
-        console.error(
-          "FAILED TO SAVE LOGIN START ERROR:",
-          saveError.message
-        );
-      }
+      await activity.save().catch(() => {});
     }
 
     return res.status(500).json({
       success: false,
       message: "Unable to start login verification.",
-      stage,
     });
   }
 });
@@ -390,6 +470,7 @@ if (
 // --------------------------------------------------
 // VERIFY LOGIN OTP
 // --------------------------------------------------
+
 
 router.post("/verify", requireFirebaseAuth, async (req, res) => {
   try {
@@ -407,20 +488,6 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
       });
     }
 
-    const challenge = await LoginOtp.findOne({
-      firebaseUid: uid,
-      loginActivityId: activityId,
-      verifiedAt: null,
-    });
-
-    if (!challenge) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Verification request not found or already used.",
-      });
-    }
-
     const activity = await LoginActivity.findOne({
       _id: activityId,
       firebaseUid: uid,
@@ -433,14 +500,17 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
       });
     }
 
-    // Ensure OTP is verified from the browser that requested it.
-    // IP changes are allowed because mobile networks can change IP addresses.
     const currentUserAgent = req.get("user-agent") || "";
 
     if (activity.userAgent !== currentUserAgent) {
-      await LoginOtp.deleteOne({
-        _id: challenge._id,
-      });
+      await Promise.all([
+        LoginOtp.deleteMany({
+          loginActivityId: activityId,
+        }),
+        LoginWakitChallenge.deleteMany({
+          loginActivityId: activityId,
+        }),
+      ]);
 
       activity.eventType = "OTP_FAILED";
       activity.loginStatus = "BLOCKED";
@@ -458,71 +528,198 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
       });
     }
 
-    if (challenge.expiresAt.getTime() <= Date.now()) {
-      await LoginOtp.deleteOne({
-        _id: challenge._id,
-      });
+    let verificationMethod;
+    let challenge;
 
-      activity.eventType = "OTP_FAILED";
-      activity.loginStatus = "FAILED";
-      activity.verificationStatus = "FAILED";
-      activity.failureReason = "Verification code expired.";
+    // First check for a Wakit WhatsApp challenge.
+    challenge = await LoginWakitChallenge.findOne({
+      firebaseUid: uid,
+      loginActivityId: activityId,
+      verifiedAt: null,
+    });
 
-      await activity.save();
+    if (challenge) {
+      verificationMethod = "PHONE";
 
-      return res.status(400).json({
-        success: false,
-        code: "OTP_EXPIRED",
-        message:
-          "Your verification code has expired. Start login again.",
-      });
-    }
+      if (challenge.expiresAt.getTime() <= Date.now()) {
+        await challenge.deleteOne();
 
-    if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
-      await LoginOtp.deleteOne({
-        _id: challenge._id,
-      });
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "FAILED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Phone OTP expired.";
 
-      activity.eventType = "OTP_FAILED";
-      activity.loginStatus = "BLOCKED";
-      activity.verificationStatus = "FAILED";
-      activity.failureReason =
-        "Maximum OTP attempts exceeded.";
+        await activity.save();
 
-      await activity.save();
+        return res.status(400).json({
+          success: false,
+          code: "OTP_EXPIRED",
+          message: "Your verification code has expired. Start login again.",
+        });
+      }
 
-      return res.status(429).json({
-        success: false,
-        message:
-          "Too many incorrect attempts. Start login again.",
-      });
-    }
+      if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+        await challenge.deleteOne();
 
-    const submittedHash = hashOtp(uid, otp);
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "BLOCKED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Maximum OTP attempts exceeded.";
 
-    if (!safeCompareHash(challenge.otpHash, submittedHash)) {
-      challenge.attempts += 1;
+        await activity.save();
+
+        return res.status(429).json({
+          success: false,
+          message: "Too many incorrect attempts. Start login again.",
+        });
+      }
+
+      let isVerified;
+
+      try {
+        isVerified = await verifyLoginOtpWhatsApp(
+          challenge.wakitChallengeId,
+          otp
+        );
+      } catch (wakitError) {
+        const status = wakitError.response?.status;
+
+        console.error("WAKIT LOGIN VERIFICATION ERROR:", {
+          status,
+          message: wakitError.message,
+          response: wakitError.response?.data,
+        });
+
+        // Count only rejected OTP attempts, not provider/server failures.
+        if (status === 400 || status === 422) {
+          challenge.attempts += 1;
+          await challenge.save();
+
+          activity.eventType = "OTP_FAILED";
+          activity.loginStatus = "FAILED";
+          activity.verificationStatus = "FAILED";
+          activity.failureReason = "Incorrect Phone OTP.";
+
+          await activity.save();
+
+          return res.status(400).json({
+            success: false,
+            message: "Incorrect verification code.",
+            remainingAttempts: Math.max(
+              0,
+              MAX_OTP_ATTEMPTS - challenge.attempts
+            ),
+          });
+        }
+
+        return res.status(502).json({
+          success: false,
+          message:
+            "WhatsApp verification is temporarily unavailable. Please try again.",
+        });
+      }
+
+      if (!isVerified) {
+        challenge.attempts += 1;
+        await challenge.save();
+
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "FAILED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Incorrect Phone OTP.";
+
+        await activity.save();
+
+        return res.status(400).json({
+          success: false,
+          message: "Incorrect verification code.",
+          remainingAttempts: Math.max(
+            0,
+            MAX_OTP_ATTEMPTS - challenge.attempts
+          ),
+        });
+      }
+
+      challenge.verifiedAt = new Date();
       await challenge.save();
+    } else {
+      // Existing email OTP verification remains available.
+      verificationMethod = "EMAIL_PASSWORD";
 
-      activity.eventType = "OTP_FAILED";
-      activity.loginStatus = "FAILED";
-      activity.verificationStatus = "FAILED";
-      activity.failureReason = "Incorrect verification code.";
-
-      await activity.save();
-
-      return res.status(400).json({
-        success: false,
-        message: "Incorrect verification code.",
-        remainingAttempts: Math.max(
-          0,
-          MAX_OTP_ATTEMPTS - challenge.attempts
-        ),
+      challenge = await LoginOtp.findOne({
+        firebaseUid: uid,
+        loginActivityId: activityId,
+        verifiedAt: null,
       });
-    }
 
-    challenge.verifiedAt = new Date();
-    await challenge.save();
+      if (!challenge) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Verification request not found or already used.",
+        });
+      }
+
+      if (challenge.expiresAt.getTime() <= Date.now()) {
+        await challenge.deleteOne();
+
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "FAILED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Verification code expired.";
+
+        await activity.save();
+
+        return res.status(400).json({
+          success: false,
+          code: "OTP_EXPIRED",
+          message:
+            "Your verification code has expired. Start login again.",
+        });
+      }
+
+      if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+        await challenge.deleteOne();
+
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "BLOCKED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Maximum OTP attempts exceeded.";
+
+        await activity.save();
+
+        return res.status(429).json({
+          success: false,
+          message: "Too many incorrect attempts. Start login again.",
+        });
+      }
+
+      const submittedHash = hashOtp(uid, otp);
+
+      if (!safeCompareHash(challenge.otpHash, submittedHash)) {
+        challenge.attempts += 1;
+        await challenge.save();
+
+        activity.eventType = "OTP_FAILED";
+        activity.loginStatus = "FAILED";
+        activity.verificationStatus = "FAILED";
+        activity.failureReason = "Incorrect verification code.";
+
+        await activity.save();
+
+        return res.status(400).json({
+          success: false,
+          message: "Incorrect verification code.",
+          remainingAttempts: Math.max(
+            0,
+            MAX_OTP_ATTEMPTS - challenge.attempts
+          ),
+        });
+      }
+
+      challenge.verifiedAt = new Date();
+      await challenge.save();
+    }
 
     const userAgent = req.get("user-agent") || "";
     const ipAddress = req.ip || "";
@@ -538,28 +735,34 @@ router.post("/verify", requireFirebaseAuth, async (req, res) => {
     activity.eventType = "LOGIN_SUCCESS";
     activity.loginStatus = "SUCCESS";
     activity.verificationStatus = "VERIFIED";
-    activity.verificationMethod = "EMAIL_PASSWORD";
+    activity.verificationMethod = verificationMethod;
     activity.deviceTrusted = false;
     activity.failureReason = "";
 
     await activity.save();
 
-    await LoginOtp.deleteOne({
-      _id: challenge._id,
-    });
+    if (verificationMethod === "PHONE") {
+      await LoginWakitChallenge.deleteOne({ _id: challenge._id });
+    } else {
+      await LoginOtp.deleteOne({ _id: challenge._id });
+    }
 
     return res.json({
       success: true,
       verified: true,
       ...sessionCredentials,
-      message: "Email verification successful.",
+      channel:
+        verificationMethod === "PHONE" ? "whatsapp" : "email",
+      message:
+        verificationMethod === "PHONE"
+          ? "WhatsApp verification successful."
+          : "Email verification successful.",
     });
   } catch (error) {
     console.error("Login OTP verification error:", {
       message: error.message,
-      code: error.code,
-      name: error.name,
-      stack: error.stack,
+      status: error.response?.status,
+      response: error.response?.data,
     });
 
     return res.status(500).json({

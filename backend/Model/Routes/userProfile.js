@@ -334,6 +334,94 @@ router.get(
   }
 );
 
+
+/* --------------------------------------------------------------------------
+   LINK A VERIFIED FIREBASE PHONE NUMBER TO THE USER PROFILE
+-------------------------------------------------------------------------- */
+
+router.post(
+  "/phone/link",
+  requireFirebaseAuth,
+  requireVerifiedLogin,
+  async (req, res) => {
+    try {
+      const uid = req.firebaseUser.uid;
+
+      // Never trust a phone number or verification flag from the frontend.
+      const firebaseUser = await firebaseAuth.getUser(uid);
+
+      const phoneNumber = firebaseUser.phoneNumber;
+
+      if (
+        !phoneNumber ||
+        !/^\+[1-9]\d{7,14}$/.test(phoneNumber)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Verify your mobile number with Firebase first.",
+        });
+      }
+
+      const hasPhoneProvider = (
+        firebaseUser.providerData || []
+      ).some(
+        (provider) => provider.providerId === "phone"
+      );
+
+      if (!hasPhoneProvider) {
+        return res.status(400).json({
+          success: false,
+          message: "No verified phone authentication is linked.",
+        });
+      }
+
+      const profile = await UserProfile.findOneAndUpdate(
+        { firebaseUid: uid },
+        {
+          $set: {
+            phoneNumber,
+            phoneVerified: true,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
+
+      if (!profile) {
+        return res.status(404).json({
+          success: false,
+          message: "Create your profile before linking a phone number.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Mobile number verified and linked successfully.",
+        phoneNumber: profile.phoneNumber,
+        phoneVerified: profile.phoneVerified,
+      });
+
+    } catch (error) {
+      if (error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: "This mobile number is already linked to another account.",
+        });
+      }
+
+      console.error("Phone linking error:", error.code || error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Could not link your mobile number.",
+      });
+    }
+  }
+);
+
+
 // Get an exact public profile by username.
 router.get(
   "/:username",

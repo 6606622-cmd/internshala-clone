@@ -2,6 +2,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const { getAuth } = require("firebase-admin/auth");
+const UserProfile = require("../UserProfile");
 
 const adminApp = require("../../firebaseAdmin");
 const PasswordResetHistory = require("../PasswordResetHistory");
@@ -10,6 +11,7 @@ const PasswordResetCooldown = require("../PasswordResetCooldown");
 
 const router = express.Router();
 const auth = getAuth(adminApp);
+const PhonePasswordResetChallenge = require("../PhonePasswordResetChallenge");
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const RESET_TOKEN_EXPIRY_MS = 10 * 60 * 1000;
@@ -57,10 +59,6 @@ function validEmail(value) {
         value.length <= 254 &&
         /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
     );
-}
-
-function validPhone(value) {
-    return typeof value === "string" && /^\+[1-9]\d{7,14}$/.test(value);
 }
 
 function validNewPassword(value) {
@@ -131,6 +129,114 @@ async function sendOtpEmail(email, otp) {
     );
 }
 
+
+async function sendWakitOtp(phoneNumber) {
+    const apiKey = process.env.WAKIT_API_KEY;
+
+    if (!apiKey) {
+        throw new Error("WAKIT_API_KEY is not configured.");
+    }
+
+    const response = await fetch(
+        "https://wakit.in/api/v1/otp/send",
+        {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                to: phoneNumber,
+                code_length: 6,
+            }),
+            signal: AbortSignal.timeout(20000),
+        }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (
+        !response.ok ||
+        result.success !== true
+    ) {
+        console.error(
+            "Wakit OTP send failed:",
+            response.status,
+            result.message || result.error || "Unknown error"
+        );
+
+        throw new Error("Wakit OTP delivery failed.");
+    }
+
+    const challengeId =
+        result.id ||
+        result.data?.id ||
+        result.data?.challenge_id;
+
+    if (!challengeId || typeof challengeId !== "string") {
+        throw new Error("Wakit did not return a challenge ID.");
+    }
+
+    return challengeId;
+}
+
+async function verifyWakitOtp(challengeId, otp) {
+    const apiKey = process.env.WAKIT_API_KEY;
+
+    if (!apiKey) {
+        throw new Error("WAKIT_API_KEY is not configured.");
+    }
+
+    const response = await fetch(
+        "https://wakit.in/api/v1/otp/verify",
+        {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                id: challengeId,
+                code: otp,
+            }),
+            signal: AbortSignal.timeout(20000),
+        }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (response.status === 400 || response.status === 422) {
+        return { valid: false };
+    }
+
+    if (!response.ok) {
+        throw new Error(
+            `Wakit verification request failed (${response.status}).`
+        );
+    }
+
+    return { valid: result.success === true };
+}
+
+async function findPasswordAccountByUid(firebaseUid) {
+    try {
+        const user = await auth.getUser(firebaseUid);
+
+        const hasPasswordProvider = (user.providerData || []).some(
+            (provider) => provider.providerId === "password"
+        );
+
+        return hasPasswordProvider ? user : null;
+    } catch (error) {
+        if (error.code === "auth/user-not-found") {
+            return null;
+        }
+
+        throw error;
+    }
+}
+
+
 async function findPasswordAccountByEmail(email) {
     try {
         const user = await auth.getUserByEmail(email);
@@ -149,23 +255,6 @@ async function findPasswordAccountByEmail(email) {
     }
 }
 
-async function findPasswordAccountByPhone(phoneNumber) {
-    try {
-        const user = await auth.getUserByPhoneNumber(phoneNumber);
-
-        const hasPasswordProvider = (user.providerData || []).some(
-            (provider) => provider.providerId === "password"
-        );
-
-        return hasPasswordProvider && user.email ? user : null;
-    } catch (error) {
-        if (error.code === "auth/user-not-found") {
-            return null;
-        }
-
-        throw error;
-    }
-}
 
 // One cooldown per Firebase account, shared by email and phone recovery.
 async function reserveCooldown(firebaseUid, resetMethod) {
@@ -1007,155 +1096,90 @@ router.post("/complete-email", async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------------------------
-// PHONE RECOVERY: prepare an eligible, short-lived recovery challenge.
-// Firebase Phone Auth sends the SMS from the frontend.
-// -----------------------------------------------------------------------------
+
+/* ---------------------------------------------------------------------------
+   PHONE RECOVERY: request OTP
+--------------------------------------------------------------------------- */
+
 router.post("/phone/request", async (req, res) => {
     const phoneNumber =
         typeof req.body?.phoneNumber === "string"
             ? req.body.phoneNumber.trim()
             : "";
 
-    if (!validPhone(phoneNumber)) {
+    if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
         return res.status(400).json({
             success: false,
-            message:
-                "Enter a valid phone number with country code.",
+            message: "Enter a valid phone number with country code.",
         });
     }
 
     let user = null;
+    let reservationTime = null;
     let history = null;
 
     try {
-        user = await findPasswordAccountByPhone(phoneNumber);
+        const profile = await UserProfile.findOne({
+            phoneNumber,
+            phoneVerified: true,
+        });
 
-        if (!user || user.phoneNumber !== phoneNumber) {
-            return res.json({
-                success: true,
-                eligible: false,
-                message:
-                    "If an eligible account exists, phone verification can continue.",
+        if (!profile) {
+            return res.status(400).json({
+                success: false,
+                message: "No verified account was found for this number.",
             });
         }
 
-        const now = new Date();
-        const cutoff = new Date(now.getTime() - OTP_RESEND_MS);
+        user = await findPasswordAccountByUid(profile.firebaseUid);
 
-        const existing = await PasswordResetChallenge.findOne({
-            firebaseUid: user.uid,
-            resetMethod: "phone",
-        }).select("_id otpResendCount lastOtpSentAt");
+        if (!user) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "This account is not eligible for password recovery using a password login.",
+            });
+        }
 
-        if (
-            existing &&
-            (
-                (existing.otpResendCount || 0) >= MAX_RESENDS ||
-                (
-                    existing.lastOtpSentAt &&
-                    existing.lastOtpSentAt > cutoff
-                )
-            )
-        ) {
+        reservationTime = await reserveCooldown(user.uid, "phone");
+
+        if (!reservationTime) {
             return res.status(429).json({
                 success: false,
                 message:
-                    "Please wait 60 seconds or check your phone recovery resend limit.",
+                    "Password recovery is limited to once every 24 hours.",
             });
         }
 
         history = await createHistory(user, "phone", req);
 
-        const recoveryTicket = crypto.randomBytes(32).toString("hex");
-        const ticketHash = hashSecret(recoveryTicket);
+        // Invalidate any previous WhatsApp recovery challenge for this account.
+        await PhonePasswordResetChallenge.deleteMany({
+            firebaseUid: user.uid,
+        });
 
-        const challengeFields = {
-            email: user.email || "",
-            resetMethod: "phone",
-            otpHash: "",
-            otpExpiresAt: null,
-            otpAttempts: 0,
-            lastOtpSentAt: now,
-            resetTokenHash: ticketHash,
-            resetTokenExpiresAt: new Date(
-                now.getTime() + RESET_TOKEN_EXPIRY_MS
-            ),
+        const wakitChallengeId = await sendWakitOtp(phoneNumber);
+        const sentAt = new Date();
+
+        await PhonePasswordResetChallenge.create({
+            firebaseUid: user.uid,
+            phoneNumber,
+            wakitChallengeId,
             historyId: history._id,
-            deliveryStatus: "not_started",
-            passwordUpdatedAt: null,
-            temporaryPasswordEncrypted: "",
-            temporaryPasswordIv: "",
-            temporaryPasswordAuthTag: "",
-        };
+            attempts: 0,
+            resendCount: 0,
+            lastSentAt: sentAt,
+            expiresAt: new Date(sentAt.getTime() + OTP_EXPIRY_MS),
+        });
 
-        const claimed = await PasswordResetChallenge.findOneAndUpdate(
-            {
-                firebaseUid: user.uid,
-                resetMethod: "phone",
-                otpResendCount: { $lt: MAX_RESENDS },
-                $or: [
-                    { lastOtpSentAt: { $exists: false } },
-                    { lastOtpSentAt: null },
-                    { lastOtpSentAt: { $lte: cutoff } },
-                ],
-            },
-            {
-                $set: challengeFields,
-                $inc: {
-                    otpResendCount: 1,
-                    deliveryAttempts: 1,
-                },
-            },
-            {
-                new: true,
-                runValidators: true,
-            }
-        );
-
-        if (!claimed) {
-            if (!existing) {
-                try {
-                    await PasswordResetChallenge.create({
-                        firebaseUid: user.uid,
-                        ...challengeFields,
-                        otpResendCount: 0,
-                        deliveryAttempts: 0,
-                    });
-
-                    return res.json({
-                        success: true,
-                        eligible: true,
-                        recoveryTicket,
-                        message:
-                            "Phone recovery is ready. Continue with phone verification.",
-                    });
-                } catch (createError) {
-                    if (createError.code !== 11000) {
-                        throw createError;
-                    }
-                }
-            }
-
-            await PasswordResetHistory.findByIdAndDelete(
-                history._id
-            ).catch(() => { });
-
-            history = null;
-
-            return res.status(429).json({
-                success: false,
-                message:
-                    "Please wait 60 seconds or check your phone recovery resend limit.",
-            });
-        }
+        await markHistory(history._id, {
+            deliveryStatus: "sent",
+        }).catch(() => {});
 
         return res.json({
             success: true,
-            eligible: true,
-            recoveryTicket,
-            message:
-                "Phone recovery is ready. Continue with phone verification.",
+            channel: "phone",
+            message: "A verification code has been sent to your WhatsApp.",
         });
     } catch (error) {
         console.error(
@@ -1166,120 +1190,362 @@ router.post("/phone/request", async (req, res) => {
         if (history) {
             await markHistory(history._id, {
                 verificationStatus: "failed",
-                failureReason: "Phone recovery request failed",
-            }).catch(() => { });
+                deliveryStatus: "failed",
+                failureReason: "WhatsApp recovery delivery failed",
+            }).catch(() => {});
         }
 
-        return res.status(500).json({
+        if (user && reservationTime) {
+            await releaseCooldown(
+                user.uid,
+                "phone",
+                reservationTime
+            ).catch(() => {});
+        }
+
+        return res.status(502).json({
             success: false,
-            message: "Unable to process phone recovery right now.",
+            message:
+                "Unable to send the phone verification code right now.",
         });
     }
 });
 
-// -----------------------------------------------------------------------------
-// PHONE RECOVERY: verify Firebase phone-auth session and one-time ticket.
-// Body: { idToken, recoveryTicket, newPassword }
-// -----------------------------------------------------------------------------
-router.post("/phone/complete", async (req, res) => {
-    const idToken =
-        typeof req.body?.idToken === "string"
-            ? req.body.idToken.trim()
+
+/* ---------------------------------------------------------------------------
+   PHONE RECOVERY: resend OTP
+--------------------------------------------------------------------------- */
+
+router.post("/phone/resend", async (req, res) => {
+    const phoneNumber =
+        typeof req.body?.phoneNumber === "string"
+            ? req.body.phoneNumber.trim()
             : "";
 
-    const recoveryTicket =
-        typeof req.body?.recoveryTicket === "string"
-            ? req.body.recoveryTicket.trim()
+    if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+        return res.status(400).json({
+            success: false,
+            message: "Enter a valid phone number with country code.",
+        });
+    }
+
+    try {
+        const profile = await UserProfile.findOne({
+            phoneNumber,
+            phoneVerified: true,
+        });
+
+        if (!profile) {
+            return res.status(400).json({
+                success: false,
+                message: "The recovery session is invalid or expired.",
+            });
+        }
+
+        const challenge = await PhonePasswordResetChallenge.findOne({
+            firebaseUid: profile.firebaseUid,
+            phoneNumber,
+            verifiedAt: null,
+        });
+
+        if (!challenge || challenge.expiresAt <= new Date()) {
+            return res.status(400).json({
+                success: false,
+                message: "Start a new recovery request.",
+            });
+        }
+
+        if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+            return res.status(429).json({
+                success: false,
+                message: "Too many attempts. Start a new recovery request later.",
+            });
+        }
+
+        if (
+            Date.now() - challenge.lastSentAt.getTime() <
+            OTP_RESEND_MS
+        ) {
+            return res.status(429).json({
+                success: false,
+                message: "Please wait 60 seconds before requesting another code.",
+            });
+        }
+
+        if (challenge.resendCount >= MAX_RESENDS) {
+            return res.status(429).json({
+                success: false,
+                message: "You have reached the resend limit.",
+            });
+        }
+
+        // Send first. Replace the stored challenge only after Wakit accepts it.
+        const newChallengeId = await sendWakitOtp(phoneNumber);
+        const sentAt = new Date();
+
+        challenge.wakitChallengeId = newChallengeId;
+        challenge.lastSentAt = sentAt;
+        challenge.expiresAt = new Date(sentAt.getTime() + OTP_EXPIRY_MS);
+        challenge.resendCount += 1;
+        challenge.attempts = 0;
+
+        await challenge.save();
+
+        return res.json({
+            success: true,
+            channel: "phone",
+            message: "A new phone verification code has been sent.",
+        });
+    } catch (error) {
+        console.error(
+            "Phone OTP resend failed:",
+            error.code || error.message
+        );
+
+        return res.status(502).json({
+            success: false,
+            message: "Unable to resend the WhatsApp code right now.",
+        });
+    }
+});
+
+
+/* ---------------------------------------------------------------------------
+   PHONE RECOVERY: verify OTP and issue reset token
+--------------------------------------------------------------------------- */
+
+router.post("/phone/verify", async (req, res) => {
+    const phoneNumber =
+        typeof req.body?.phoneNumber === "string"
+            ? req.body.phoneNumber.trim()
+            : "";
+
+    const otp =
+        typeof req.body?.otp === "string"
+            ? req.body.otp.trim()
+            : "";
+
+    if (
+        !/^\+[1-9]\d{7,14}$/.test(phoneNumber) ||
+        !/^\d{6}$/.test(otp)
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: "Enter your registered phone number and six-digit code.",
+        });
+    }
+
+    try {
+        const profile = await UserProfile.findOne({
+            phoneNumber,
+            phoneVerified: true,
+        });
+
+        if (!profile) {
+            return res.status(400).json({
+                success: false,
+                message: "The code is invalid or expired.",
+            });
+        }
+
+        const user = await findPasswordAccountByUid(profile.firebaseUid);
+
+        if (!user) {
+            return res.status(400).json({
+                success: false,
+                message: "The code is invalid or expired.",
+            });
+        }
+
+        const challenge = await PhonePasswordResetChallenge.findOne({
+            firebaseUid: user.uid,
+            phoneNumber,
+            verifiedAt: null,
+        });
+
+        if (!challenge || challenge.expiresAt <= new Date()) {
+            return res.status(400).json({
+                success: false,
+                message: "The code has expired. Request a new one.",
+            });
+        }
+
+        if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+            return res.status(429).json({
+                success: false,
+                message: "Too many incorrect attempts.",
+            });
+        }
+
+        let verification;
+
+        try {
+            verification = await verifyWakitOtp(
+                challenge.wakitChallengeId,
+                otp
+            );
+        } catch (providerError) {
+            console.error(
+                "Wakit verification unavailable:",
+                providerError.message
+            );
+
+            return res.status(502).json({
+                success: false,
+                message: "Unable to verify the code right now. Please try again.",
+            });
+        }
+
+        if (!verification.valid) {
+            challenge.attempts += 1;
+            await challenge.save();
+
+            if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+                await markHistory(challenge.historyId, {
+                    verificationStatus: "blocked",
+                    failureReason: "Phone OTP attempt limit reached",
+                }).catch(() => {});
+            }
+
+            return res.status(400).json({
+                success: false,
+                message: "The code is invalid or expired.",
+            });
+        }
+
+        const resetToken = crypto.randomBytes(32).toString("hex");
+        const resetTokenHash = hashSecret(resetToken);
+        const verifiedAt = new Date();
+
+        // Claim this challenge only once.
+        const claimed = await PhonePasswordResetChallenge.findOneAndUpdate(
+            {
+                _id: challenge._id,
+                verifiedAt: null,
+                expiresAt: { $gt: verifiedAt },
+                attempts: { $lt: MAX_OTP_ATTEMPTS },
+            },
+            {
+                $set: {
+                    verifiedAt,
+                    resetTokenHash,
+                    resetTokenExpiresAt: new Date(
+                        verifiedAt.getTime() + RESET_TOKEN_EXPIRY_MS
+                    ),
+                },
+            },
+            { new: true }
+        );
+
+        if (!claimed) {
+            return res.status(400).json({
+                success: false,
+                message: "The code is invalid or expired.",
+            });
+        }
+
+        await markHistory(challenge.historyId, {
+            verificationStatus: "verified",
+            verifiedAt,
+        }).catch(() => {});
+
+        return res.json({
+            success: true,
+            resetToken,
+            message: "	Phone number verified. You can now set a new password.",
+        });
+    } catch (error) {
+        console.error(
+            "Phone OTP verification failed:",
+            error.code || error.message
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Unable to verify the code right now.",
+        });
+    }
+});
+
+
+/* ---------------------------------------------------------------------------
+   PHONE RECOVERY: complete password reset
+--------------------------------------------------------------------------- */
+
+router.post("/phone/complete", async (req, res) => {
+    const phoneNumber =
+        typeof req.body?.phoneNumber === "string"
+            ? req.body.phoneNumber.trim()
+            : "";
+
+    const resetToken =
+        typeof req.body?.resetToken === "string"
+            ? req.body.resetToken
             : "";
 
     const newPassword = req.body?.newPassword;
 
     if (
-        !idToken ||
-        !/^[a-f0-9]{64}$/i.test(recoveryTicket) ||
+        !/^\+[1-9]\d{7,14}$/.test(phoneNumber) ||
+        !/^[a-f0-9]{64}$/i.test(resetToken) ||
         !validNewPassword(newPassword)
     ) {
         return res.status(400).json({
             success: false,
-            message:
-                "Invalid phone recovery details or password.",
+            message: "Invalid recovery details or password.",
         });
     }
 
-    let user = null;
     let challenge = null;
-    let cooldownReservation = null;
+    let tokenHash = "";
     let passwordChanged = false;
 
     try {
-        const decoded = await auth.verifyIdToken(idToken, true);
-        const authTimeMs = Number(decoded.auth_time) * 1000;
+        const profile = await UserProfile.findOne({
+            phoneNumber,
+            phoneVerified: true,
+        });
 
-        if (
-            decoded.firebase?.sign_in_provider !== "phone" ||
-            typeof decoded.phone_number !== "string" ||
-            !Number.isFinite(authTimeMs) ||
-            Date.now() - authTimeMs > 5 * 60 * 1000 ||
-            authTimeMs > Date.now() + 60 * 1000
-        ) {
-            return res.status(401).json({
+        if (!profile) {
+            return res.status(400).json({
                 success: false,
-                message:
-                    "Phone verification has expired. Please verify again.",
+                message: "Your recovery session is invalid or expired.",
             });
         }
 
-        user = await auth.getUser(decoded.uid);
+        const user = await findPasswordAccountByUid(profile.firebaseUid);
 
-        const hasPasswordProvider = (user.providerData || []).some(
-            (provider) => provider.providerId === "password"
-        );
-
-        if (
-            user.phoneNumber !== decoded.phone_number ||
-            !hasPasswordProvider ||
-            !user.email
-        ) {
-            return res.status(403).json({
+        if (!user) {
+            return res.status(400).json({
                 success: false,
-                message:
-                    "This phone number is not linked to an eligible InternArea account.",
+                message: "Your recovery session is invalid or expired.",
             });
         }
 
-        const ticketHash = hashSecret(recoveryTicket);
+        tokenHash = hashSecret(resetToken);
 
-        challenge = await PasswordResetChallenge.findOne({
+        challenge = await PhonePasswordResetChallenge.findOne({
             firebaseUid: user.uid,
-            resetMethod: "phone",
-            resetTokenHash: ticketHash,
+            phoneNumber,
+            verifiedAt: { $ne: null },
             resetTokenExpiresAt: { $gt: new Date() },
         }).select("+resetTokenHash");
 
-        if (!challenge || !challenge.historyId) {
+        if (
+            !challenge ||
+            !safeCompareHex(tokenHash, challenge.resetTokenHash)
+        ) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Your phone recovery session has expired. Start again.",
+                message: "Your recovery session is invalid or expired.",
             });
         }
 
-        cooldownReservation = await reserveCooldown(user.uid, "phone");
-
-        if (!cooldownReservation) {
-            return res.status(429).json({
-                success: false,
-                message:
-                    "Password recovery is limited to once every 24 hours.",
-            });
-        }
-
-        const consumed = await PasswordResetChallenge.findOneAndUpdate(
+        // Atomically consume the reset token to prevent reuse.
+        const consumed = await PhonePasswordResetChallenge.findOneAndUpdate(
             {
                 _id: challenge._id,
-                firebaseUid: user.uid,
-                resetMethod: "phone",
-                resetTokenHash: ticketHash,
+                resetTokenHash: challenge.resetTokenHash,
                 resetTokenExpiresAt: { $gt: new Date() },
             },
             {
@@ -1292,18 +1558,9 @@ router.post("/phone/complete", async (req, res) => {
         );
 
         if (!consumed) {
-            await releaseCooldown(
-                user.uid,
-                "phone",
-                cooldownReservation
-            ).catch(() => { });
-
-            cooldownReservation = null;
-
             return res.status(400).json({
                 success: false,
-                message:
-                    "Your phone recovery session has expired. Start again.",
+                message: "Your recovery session is invalid or expired.",
             });
         }
 
@@ -1311,7 +1568,8 @@ router.post("/phone/complete", async (req, res) => {
             await finishFirebasePasswordChange(user.uid, newPassword);
             passwordChanged = true;
         } catch (updateError) {
-            await PasswordResetChallenge.updateOne(
+            // Restore the token only if Firebase did not change the password.
+            await PhonePasswordResetChallenge.updateOne(
                 {
                     _id: challenge._id,
                     resetTokenHash: "",
@@ -1319,34 +1577,27 @@ router.post("/phone/complete", async (req, res) => {
                 },
                 {
                     $set: {
-                        resetTokenHash: ticketHash,
+                        resetTokenHash: tokenHash,
                         resetTokenExpiresAt: challenge.resetTokenExpiresAt,
                     },
                 }
-            ).catch(() => { });
+            ).catch(() => {});
 
             throw updateError;
         }
 
         const completedAt = new Date();
 
-        await PasswordResetChallenge.updateOne(
-            { _id: challenge._id },
-            {
-                $set: {
-                    passwordUpdatedAt: completedAt,
-                    otpHash: "",
-                    otpExpiresAt: null,
-                },
-            }
-        );
-
         await markHistory(challenge.historyId, {
             verificationStatus: "completed",
             completedAt,
             passwordUpdatedAt: completedAt,
             failureReason: "",
-        });
+        }).catch(() => {});
+
+        await PhonePasswordResetChallenge.deleteOne({
+            _id: challenge._id,
+        }).catch(() => {});
 
         return res.json({
             success: true,
@@ -1354,21 +1605,16 @@ router.post("/phone/complete", async (req, res) => {
         });
     } catch (error) {
         console.error(
-            "Phone password reset failed:",
+            "WhatsApp password reset failed:",
             error.code || error.message
         );
 
         if (passwordChanged) {
-            if (challenge?.historyId) {
-                const completedAt = new Date();
-
-                await markHistory(challenge.historyId, {
-                    verificationStatus: "completed",
-                    completedAt,
-                    passwordUpdatedAt: completedAt,
-                    failureReason: "",
-                }).catch(() => { });
-            }
+            await markHistory(challenge?.historyId, {
+                verificationStatus: "completed",
+                completedAt: new Date(),
+                failureReason: "",
+            }).catch(() => {});
 
             return res.json({
                 success: true,
@@ -1376,27 +1622,120 @@ router.post("/phone/complete", async (req, res) => {
             });
         }
 
-        if (user && cooldownReservation) {
-            await releaseCooldown(
-                user.uid,
-                "phone",
-                cooldownReservation
-            ).catch(() => { });
-        }
-
-        if (challenge?.historyId) {
-            await markHistory(challenge.historyId, {
-                verificationStatus: "failed",
-                failureReason: "Phone password reset failed",
-            }).catch(() => { });
-        }
-
         return res.status(500).json({
             success: false,
-            message:
-                "Unable to finish phone recovery. Please try again.",
+            message: "Unable to finish recovery. Please try again.",
         });
     }
+});
+
+
+router.post("/phone/contact", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const idToken = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : "";
+
+    if (!idToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Please sign in again.",
+      });
+    }
+
+    const decoded = await auth.verifyIdToken(idToken, true);
+
+    let phoneNumber = req.body.phoneNumber;
+
+    if (typeof phoneNumber !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid mobile number.",
+      });
+    }
+
+    phoneNumber = phoneNumber.trim();
+
+    if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid mobile number with country code.",
+      });
+    }
+
+    const profile = await UserProfile.findOne({
+      firebaseUid: decoded.uid,
+    });
+
+    if (!profile) {
+      return res.status(404).json({
+        success: false,
+        message: "InternArea profile not found.",
+      });
+    }
+
+    profile.contactPhoneNumber = phoneNumber;
+    profile.contactPhoneVerified = false;
+
+    await profile.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Mobile contact number saved successfully.",
+      contactPhoneNumber: phoneNumber,
+      contactPhoneVerified: false,
+    });
+  } catch (error) {
+    console.error("Contact phone save error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to save mobile number right now.",
+    });
+  }
+});
+
+router.get("/phone/contact", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const idToken = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+
+    if (!idToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Please sign in again.",
+      });
+    }
+
+    const decoded = await auth.verifyIdToken(idToken, true);
+
+    const profile = await UserProfile.findOne({
+      firebaseUid: decoded.uid,
+    }).select("contactPhoneNumber contactPhoneVerified");
+
+    if (!profile) {
+      return res.status(404).json({
+        success: false,
+        message: "InternArea profile not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      contactPhoneNumber: profile.contactPhoneNumber || "",
+      contactPhoneVerified: profile.contactPhoneVerified === true,
+    });
+  } catch (error) {
+    console.error("Contact phone fetch error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load mobile number right now.",
+    });
+  }
 });
 
 // -----------------------------------------------------------------------------
