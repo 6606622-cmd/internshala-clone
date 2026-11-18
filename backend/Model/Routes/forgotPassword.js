@@ -1839,7 +1839,29 @@ router.post("/phone/contact/request", async (req, res) => {
     const { decoded, profile } =
       await getAuthenticatedContactProfile(req);
 
-    const phoneNumber = profile.contactPhoneNumber;
+    const phoneNumber =
+  typeof req.body?.phoneNumber === "string"
+    ? req.body.phoneNumber.trim()
+    : "";
+
+if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+  return res.status(400).json({
+    success: false,
+    message: "Enter a valid mobile number with country code.",
+  });
+}
+
+const sameAsSaved =
+  normalizePhoneForComparison(profile.contactPhoneNumber) ===
+  normalizePhoneForComparison(phoneNumber);
+
+if (sameAsSaved && profile.contactPhoneVerified === true) {
+  return res.json({
+    success: true,
+    verified: true,
+    message: "This mobile number is already verified.",
+  });
+}
 
     if (!phoneNumber || !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
       return res.status(400).json({
