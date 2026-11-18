@@ -229,75 +229,101 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.uid]);
 
-  // Initialize MSG91 Widget
-  useEffect(() => {
-    const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
-    const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
+// Initialize MSG91 Widget
+useEffect(() => {
+  const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
+  const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
 
-    if (!widgetId || !tokenAuth) {
-      console.error("MSG91 Widget frontend configuration is missing.");
+  if (!widgetId || !tokenAuth) {
+    console.error("MSG91 Widget frontend configuration is missing.");
+    setMsg91Ready(false);
+    return;
+  }
+
+  let cancelled = false;
+
+  const initializeWidget = () => {
+    if (cancelled) return;
+
+    if (!window.initSendOTP) {
+      console.error("MSG91 initialization function is unavailable.");
+      setMsg91Ready(false);
       return;
     }
 
-    const initializeWidget = () => {
-      if (!window.initSendOTP) {
-        console.error("MSG91 initialization function is unavailable.");
+    try {
+      window.initSendOTP({
+        widgetId,
+        tokenAuth,
+        exposeMethods: true,
+      });
+
+      const methodsAvailable =
+        typeof window.sendOtp === "function" &&
+        typeof window.verifyOtp === "function" &&
+        typeof window.retryOtp === "function";
+
+      if (!methodsAvailable) {
+        console.error("MSG91 OTP methods are not available after initialization.");
+        setMsg91Ready(false);
         return;
       }
 
-      try {
-        window.initSendOTP({
-          widgetId,
-          tokenAuth,
-          exposeMethods: true,
-        });
+      setMsg91Ready(true);
+      console.log("MSG91 Widget initialized successfully.");
+    } catch (error) {
+      console.error("MSG91 widget initialization failed:", error);
+      setMsg91Ready(false);
+    }
+  };
 
-        setMsg91Ready(true);
-      } catch (error) {
-        console.error("MSG91 widget initialization failed.");
-      }
+  const scriptUrl = "https://verify.msg91.com/otp-provider.js";
+
+  let script = document.querySelector(
+    `script[src="${scriptUrl}"]`
+  ) as HTMLScriptElement | null;
+
+  if (
+    typeof window.sendOtp === "function" &&
+    typeof window.verifyOtp === "function" &&
+    typeof window.retryOtp === "function"
+  ) {
+    initializeWidget();
+    return () => {
+      cancelled = true;
     };
+  }
 
-    if (
-      window.sendOtp &&
-      window.verifyOtp &&
-      window.retryOtp
-    ) {
+  const handleLoad = () => initializeWidget();
+
+  const handleError = () => {
+    console.error("Unable to load MSG91 OTP Widget.");
+    if (!cancelled) setMsg91Ready(false);
+  };
+
+  if (script) {
+    script.addEventListener("load", handleLoad);
+    script.addEventListener("error", handleError);
+
+    // Handle a script that has already loaded.
+    if (window.initSendOTP) {
       initializeWidget();
-      return;
     }
-
-    const scriptUrl =
-      "https://verify.msg91.com/otp-provider.js";
-
-    const existingScript = document.querySelector(
-      `script[src="${scriptUrl}"]`
-    ) as HTMLScriptElement | null;
-
-    if (existingScript) {
-      if (window.initSendOTP) {
-        initializeWidget();
-      } else {
-        existingScript.addEventListener(
-          "load",
-          initializeWidget,
-          { once: true }
-        );
-      }
-
-      return;
-    }
-
-    const script = document.createElement("script");
+  } else {
+    script = document.createElement("script");
     script.src = scriptUrl;
     script.async = true;
-    script.onload = initializeWidget;
-    script.onerror = () => {
-      console.error("Unable to load MSG91 OTP Widget.");
-    };
-
+    script.addEventListener("load", handleLoad);
+    script.addEventListener("error", handleError);
     document.body.appendChild(script);
-  }, []);
+  }
+
+  return () => {
+    cancelled = true;
+    script?.removeEventListener("load", handleLoad);
+    script?.removeEventListener("error", handleError);
+  };
+}, []);
 
   // Revoke one device session
   const revokeSession = async (sessionId: string) => {
