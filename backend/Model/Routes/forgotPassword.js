@@ -2018,7 +2018,7 @@ router.post("/phone/contact/verify", async (req, res) => {
             consumedAt: verifiedAt,
           },
         },
-        { new: true }
+       { returnDocument: "after" }
       );
 
     if (!claimed) {

@@ -313,21 +313,21 @@ const Index = () => {
   }, []);
 
   useEffect(() => {
-  if (typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
 
-  const isLocalhost =
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1";
+    const isLocalhost =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
 
-  if (isLocalhost) {
-    const liveProfileUrl = new URL(
-      `${window.location.pathname}${window.location.search}${window.location.hash}`,
-      "https://internarea-frontend-honf.onrender.com"
-    );
+    if (isLocalhost) {
+      const liveProfileUrl = new URL(
+        `${window.location.pathname}${window.location.search}${window.location.hash}`,
+        "https://internarea-frontend-honf.onrender.com"
+      );
 
-    window.location.replace(liveProfileUrl.toString());
-  }
-}, []);
+      window.location.replace(liveProfileUrl.toString());
+    }
+  }, []);
 
 
   // Revoke one device session
@@ -716,10 +716,12 @@ const Index = () => {
       }
 
       if (!window.verifyOtp) {
+
         throw new Error(
           "MSG91 is not ready. Please refresh and try again."
         );
       }
+
 
       const firebaseUser = auth.currentUser;
 
@@ -742,6 +744,16 @@ const Index = () => {
           contactOtpReqId
         );
       });
+
+      console.log("MSG91 verification result keys:", Object.keys(widgetResult || {}));
+      console.log(
+        "MSG91 verification result:",
+        JSON.stringify(widgetResult, (key, value) =>
+          /token|otp|phone|mobile|authorization/i.test(key)
+            ? "[REDACTED]"
+            : value
+        )
+      );
 
       const accessToken = extractMsg91AccessToken(widgetResult);
 
@@ -929,8 +941,8 @@ const Index = () => {
                     role="status"
                     aria-live="polite"
                     className={`mb-4 rounded-lg p-3 text-sm ${messageType === "success"
-                        ? "bg-green-50 text-green-700"
-                        : "bg-red-50 text-red-700"
+                      ? "bg-green-50 text-green-700"
+                      : "bg-red-50 text-red-700"
                       }`}
                   >
                     {message}
@@ -1086,8 +1098,8 @@ const Index = () => {
                   <div
                     role="status"
                     className={`rounded-lg p-3 text-sm mb-4 ${sessionError
-                        ? "bg-red-50 text-red-700"
-                        : "bg-green-50 text-green-700"
+                      ? "bg-red-50 text-red-700"
+                      : "bg-green-50 text-green-700"
                       }`}
                   >
                     {sessionMessage}
@@ -1347,8 +1359,8 @@ const Index = () => {
                         role="status"
                         aria-live="polite"
                         className={`mt-3 rounded-lg p-3 text-sm ${contactOtpSuccess
-                            ? "bg-green-50 text-green-700"
-                            : "bg-blue-50 text-blue-700"
+                          ? "bg-green-50 text-green-700"
+                          : "bg-blue-50 text-blue-700"
                           }`}
                       >
                         {contactOtpMessage}
