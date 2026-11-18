@@ -256,24 +256,31 @@ useEffect(() => {
         widgetId,
         tokenAuth,
         exposeMethods: true,
+
+        // Required MSG91 success callback
+        success: (data: any) => {
+          console.log("MSG91 Widget initialized successfully.");
+
+          if (!cancelled) {
+            setMsg91Ready(true);
+          }
+        },
+
+        // Required MSG91 failure callback
+        failure: (error: any) => {
+          console.error("MSG91 Widget initialization failed:", error);
+
+          if (!cancelled) {
+            setMsg91Ready(false);
+          }
+        },
       });
-
-      const methodsAvailable =
-        typeof window.sendOtp === "function" &&
-        typeof window.verifyOtp === "function" &&
-        typeof window.retryOtp === "function";
-
-      if (!methodsAvailable) {
-        console.error("MSG91 OTP methods are not available after initialization.");
-        setMsg91Ready(false);
-        return;
-      }
-
-      setMsg91Ready(true);
-      console.log("MSG91 Widget initialized successfully.");
     } catch (error) {
-      console.error("MSG91 widget initialization failed:", error);
-      setMsg91Ready(false);
+      console.error("MSG91 initialization error:", error);
+
+      if (!cancelled) {
+        setMsg91Ready(false);
+      }
     }
   };
 
@@ -283,47 +290,35 @@ useEffect(() => {
     `script[src="${scriptUrl}"]`
   ) as HTMLScriptElement | null;
 
-  if (
-    typeof window.sendOtp === "function" &&
-    typeof window.verifyOtp === "function" &&
-    typeof window.retryOtp === "function"
-  ) {
-    initializeWidget();
-    return () => {
-      cancelled = true;
-    };
-  }
-
-  const handleLoad = () => initializeWidget();
-
-  const handleError = () => {
-    console.error("Unable to load MSG91 OTP Widget.");
-    if (!cancelled) setMsg91Ready(false);
-  };
-
   if (script) {
-    script.addEventListener("load", handleLoad);
-    script.addEventListener("error", handleError);
-
-    // Handle a script that has already loaded.
     if (window.initSendOTP) {
       initializeWidget();
+    } else {
+      script.addEventListener("load", initializeWidget, { once: true });
     }
   } else {
     script = document.createElement("script");
     script.src = scriptUrl;
     script.async = true;
-    script.addEventListener("load", handleLoad);
-    script.addEventListener("error", handleError);
+
+    script.onload = initializeWidget;
+
+    script.onerror = () => {
+      console.error("Unable to load MSG91 OTP Widget.");
+
+      if (!cancelled) {
+        setMsg91Ready(false);
+      }
+    };
+
     document.body.appendChild(script);
   }
 
   return () => {
     cancelled = true;
-    script?.removeEventListener("load", handleLoad);
-    script?.removeEventListener("error", handleError);
   };
 }, []);
+
 
   // Revoke one device session
   const revokeSession = async (sessionId: string) => {
