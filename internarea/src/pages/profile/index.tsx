@@ -230,12 +230,13 @@ const Index = () => {
   }, [currentUser?.uid]);
 
 // Initialize MSG91 Widget
+
 useEffect(() => {
   const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
   const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
 
   if (!widgetId || !tokenAuth) {
-    console.error("MSG91 Widget frontend configuration is missing.");
+    console.error("MSG91 widget configuration is missing.");
     setMsg91Ready(false);
     return;
   }
@@ -246,7 +247,7 @@ useEffect(() => {
     if (cancelled) return;
 
     if (!window.initSendOTP) {
-      console.error("MSG91 initialization function is unavailable.");
+      console.error("MSG91 initSendOTP is unavailable.");
       setMsg91Ready(false);
       return;
     }
@@ -257,60 +258,51 @@ useEffect(() => {
         tokenAuth,
         exposeMethods: true,
 
-        // Required MSG91 success callback
+        // These callbacks handle the OTP verification result.
         success: (data: any) => {
-          console.log("MSG91 Widget initialized successfully.");
-
-          if (!cancelled) {
-            setMsg91Ready(true);
-          }
+          console.log("MSG91 OTP verification success:", data);
         },
-
-        // Required MSG91 failure callback
         failure: (error: any) => {
-          console.error("MSG91 Widget initialization failed:", error);
-
-          if (!cancelled) {
-            setMsg91Ready(false);
-          }
+          console.error("MSG91 OTP verification failure:", error);
         },
       });
+
+      const methodsAvailable =
+        typeof window.sendOtp === "function" &&
+        typeof window.verifyOtp === "function" &&
+        typeof window.retryOtp === "function";
+
+      if (methodsAvailable) {
+        console.log("MSG91 methods are ready.");
+        if (!cancelled) setMsg91Ready(true);
+      } else {
+        console.error("MSG91 methods were not exposed after initialization.");
+        if (!cancelled) setMsg91Ready(false);
+      }
     } catch (error) {
       console.error("MSG91 initialization error:", error);
-
-      if (!cancelled) {
-        setMsg91Ready(false);
-      }
+      if (!cancelled) setMsg91Ready(false);
     }
   };
 
   const scriptUrl = "https://verify.msg91.com/otp-provider.js";
-
   let script = document.querySelector(
     `script[src="${scriptUrl}"]`
   ) as HTMLScriptElement | null;
 
-  if (script) {
-    if (window.initSendOTP) {
-      initializeWidget();
-    } else {
-      script.addEventListener("load", initializeWidget, { once: true });
-    }
+  if (window.initSendOTP) {
+    initializeWidget();
+  } else if (script) {
+    script.addEventListener("load", initializeWidget, { once: true });
   } else {
     script = document.createElement("script");
     script.src = scriptUrl;
     script.async = true;
-
     script.onload = initializeWidget;
-
     script.onerror = () => {
       console.error("Unable to load MSG91 OTP Widget.");
-
-      if (!cancelled) {
-        setMsg91Ready(false);
-      }
+      if (!cancelled) setMsg91Ready(false);
     };
-
     document.body.appendChild(script);
   }
 
