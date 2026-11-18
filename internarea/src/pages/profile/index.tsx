@@ -55,6 +55,7 @@ declare global {
 }
 
 const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ||
   "https://internshala-clone-a0st.onrender.com/api";
 
 interface LoginSession {
@@ -212,8 +213,8 @@ const Index = () => {
       setSessionError(true);
       setSessionMessage(
         error.response?.data?.message ||
-          error.message ||
-          "Unable to load active devices."
+        error.message ||
+        "Unable to load active devices."
       );
     } finally {
       setSessionsLoading(false);
@@ -229,86 +230,103 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.uid]);
 
-// Initialize MSG91 Widget
+  // Initialize MSG91 Widget
 
-useEffect(() => {
-  const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
-  const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
+  useEffect(() => {
+    const widgetId = process.env.NEXT_PUBLIC_MSG91_WIDGET_ID;
+    const tokenAuth = process.env.NEXT_PUBLIC_MSG91_WIDGET_TOKEN;
 
-  if (!widgetId || !tokenAuth) {
-    console.error("MSG91 widget configuration is missing.");
-    setMsg91Ready(false);
-    return;
-  }
-
-  let cancelled = false;
-
-  const initializeWidget = () => {
-    if (cancelled) return;
-
-    if (!window.initSendOTP) {
-      console.error("MSG91 initSendOTP is unavailable.");
+    if (!widgetId || !tokenAuth) {
+      console.error("MSG91 widget configuration is missing.");
       setMsg91Ready(false);
       return;
     }
 
-    try {
-      window.initSendOTP({
-        widgetId,
-        tokenAuth,
-        exposeMethods: true,
+    let cancelled = false;
 
-        // These callbacks handle the OTP verification result.
-        success: (data: any) => {
-          console.log("MSG91 OTP verification success:", data);
-        },
-        failure: (error: any) => {
-          console.error("MSG91 OTP verification failure:", error);
-        },
-      });
+    const initializeWidget = () => {
+      if (cancelled) return;
 
-      const methodsAvailable =
-        typeof window.sendOtp === "function" &&
-        typeof window.verifyOtp === "function" &&
-        typeof window.retryOtp === "function";
+      if (!window.initSendOTP) {
+        console.error("MSG91 initSendOTP is unavailable.");
+        setMsg91Ready(false);
+        return;
+      }
 
-      if (methodsAvailable) {
-        console.log("MSG91 methods are ready.");
-        if (!cancelled) setMsg91Ready(true);
-      } else {
-        console.error("MSG91 methods were not exposed after initialization.");
+      try {
+        window.initSendOTP({
+          widgetId,
+          tokenAuth,
+          exposeMethods: true,
+
+          // These callbacks handle the OTP verification result.
+          success: (data: any) => {
+            console.log("MSG91 OTP verification success:", data);
+          },
+          failure: (error: any) => {
+            console.error("MSG91 OTP verification failure:", error);
+          },
+        });
+
+        const methodsAvailable =
+          typeof window.sendOtp === "function" &&
+          typeof window.verifyOtp === "function" &&
+          typeof window.retryOtp === "function";
+
+        if (methodsAvailable) {
+          console.log("MSG91 methods are ready.");
+          if (!cancelled) setMsg91Ready(true);
+        } else {
+          console.error("MSG91 methods were not exposed after initialization.");
+          if (!cancelled) setMsg91Ready(false);
+        }
+      } catch (error) {
+        console.error("MSG91 initialization error:", error);
         if (!cancelled) setMsg91Ready(false);
       }
-    } catch (error) {
-      console.error("MSG91 initialization error:", error);
-      if (!cancelled) setMsg91Ready(false);
-    }
-  };
-
-  const scriptUrl = "https://verify.msg91.com/otp-provider.js";
-  let script = document.querySelector(
-    `script[src="${scriptUrl}"]`
-  ) as HTMLScriptElement | null;
-
-  if (window.initSendOTP) {
-    initializeWidget();
-  } else if (script) {
-    script.addEventListener("load", initializeWidget, { once: true });
-  } else {
-    script = document.createElement("script");
-    script.src = scriptUrl;
-    script.async = true;
-    script.onload = initializeWidget;
-    script.onerror = () => {
-      console.error("Unable to load MSG91 OTP Widget.");
-      if (!cancelled) setMsg91Ready(false);
     };
-    document.body.appendChild(script);
-  }
 
-  return () => {
-    cancelled = true;
-  };
+    const scriptUrl = "https://verify.msg91.com/otp-provider.js";
+    let script = document.querySelector(
+      `script[src="${scriptUrl}"]`
+    ) as HTMLScriptElement | null;
+
+    if (window.initSendOTP) {
+      initializeWidget();
+    } else if (script) {
+      script.addEventListener("load", initializeWidget, { once: true });
+    } else {
+      script = document.createElement("script");
+      script.src = scriptUrl;
+      script.async = true;
+      script.onload = initializeWidget;
+      script.onerror = () => {
+        console.error("Unable to load MSG91 OTP Widget.");
+        if (!cancelled) setMsg91Ready(false);
+      };
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const isLocalhost =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1";
+
+  if (isLocalhost) {
+    const liveProfileUrl = new URL(
+      `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      "https://internarea-frontend-honf.onrender.com"
+    );
+
+    window.location.replace(liveProfileUrl.toString());
+  }
 }, []);
 
 
@@ -342,8 +360,8 @@ useEffect(() => {
       setSessionError(true);
       setSessionMessage(
         error.response?.data?.message ||
-          error.message ||
-          "Unable to sign out this device."
+        error.message ||
+        "Unable to sign out this device."
       );
     } finally {
       setRevokingSession("");
@@ -386,8 +404,8 @@ useEffect(() => {
       setSessionError(true);
       setSessionMessage(
         error.response?.data?.message ||
-          error.message ||
-          "Unable to sign out other devices."
+        error.message ||
+        "Unable to sign out other devices."
       );
     } finally {
       setRevokingSession("");
@@ -486,8 +504,8 @@ useEffect(() => {
     } catch (error: unknown) {
       const errorCode =
         typeof error === "object" &&
-        error !== null &&
-        "code" in error
+          error !== null &&
+          "code" in error
           ? String(error.code)
           : "";
 
@@ -511,8 +529,7 @@ useEffect(() => {
         );
       } else {
         setMessage(
-          `Could not add the password (${
-            errorCode || "unknown error"
+          `Could not add the password (${errorCode || "unknown error"
           }). Please try again.`
         );
       }
@@ -646,39 +663,39 @@ useEffect(() => {
       setContactOtpMessage(
         "OTP sent successfully through SMS."
       );
- 
-} catch (error: any) {
-  console.error("CONTACT OTP REQUEST FAILED:", error);
 
-  console.error("Error response:", error?.response?.data);
-  console.error("Error message:", error?.message);
+    } catch (error: any) {
+      console.error("CONTACT OTP REQUEST FAILED:", error);
 
-  let errorMessage = "Unable to send OTP.";
+      console.error("Error response:", error?.response?.data);
+      console.error("Error message:", error?.message);
 
-  if (axios.isAxiosError(error)) {
-    errorMessage =
-      error.response?.data?.message ||
-      error.response?.data?.error ||
-      error.message;
-  } else if (typeof error === "string") {
-    errorMessage = error;
-  } else if (error?.message) {
-    errorMessage = error.message;
-  } else if (error && typeof error === "object") {
-    errorMessage =
-      error.message ||
-      error.error ||
-      error.type ||
-      JSON.stringify(error);
-  }
+      let errorMessage = "Unable to send OTP.";
 
-  setContactOtpMessage(errorMessage);
-  setContactOtpSent(false);
-  setContactOtpReqId("");
-  setContactVerificationSessionId("");
-} finally {
-  setContactOtpLoading(false);
-}
+      if (axios.isAxiosError(error)) {
+        errorMessage =
+          error.response?.data?.message ||
+          error.response?.data?.error ||
+          error.message;
+      } else if (typeof error === "string") {
+        errorMessage = error;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      } else if (error && typeof error === "object") {
+        errorMessage =
+          error.message ||
+          error.error ||
+          error.type ||
+          JSON.stringify(error);
+      }
+
+      setContactOtpMessage(errorMessage);
+      setContactOtpSent(false);
+      setContactOtpReqId("");
+      setContactVerificationSessionId("");
+    } finally {
+      setContactOtpLoading(false);
+    }
   };
 
   // Verify SMS OTP and link the number to the account
@@ -688,8 +705,8 @@ useEffect(() => {
       setContactOtpMessage("");
       setContactOtpSuccess(false);
 
-      if (!/^\d{6}$/.test(contactOtp)) {
-        throw new Error("Enter the valid 6-digit OTP.");
+      if (!/^\d{4}$/.test(contactOtp)) {
+        throw new Error("Enter the valid 4-digit OTP.");
       }
 
       if (!contactOtpReqId || !contactVerificationSessionId) {
@@ -911,11 +928,10 @@ useEffect(() => {
                   <div
                     role="status"
                     aria-live="polite"
-                    className={`mb-4 rounded-lg p-3 text-sm ${
-                      messageType === "success"
+                    className={`mb-4 rounded-lg p-3 text-sm ${messageType === "success"
                         ? "bg-green-50 text-green-700"
                         : "bg-red-50 text-red-700"
-                    }`}
+                      }`}
                   >
                     {message}
                   </div>
@@ -1055,9 +1071,8 @@ useEffect(() => {
                     className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50"
                   >
                     <RefreshCw
-                      className={`h-4 w-4 ${
-                        sessionsLoading ? "animate-spin" : ""
-                      }`}
+                      className={`h-4 w-4 ${sessionsLoading ? "animate-spin" : ""
+                        }`}
                     />
                     Refresh
                   </button>
@@ -1070,11 +1085,10 @@ useEffect(() => {
                 {sessionMessage && (
                   <div
                     role="status"
-                    className={`rounded-lg p-3 text-sm mb-4 ${
-                      sessionError
+                    className={`rounded-lg p-3 text-sm mb-4 ${sessionError
                         ? "bg-red-50 text-red-700"
                         : "bg-green-50 text-green-700"
-                    }`}
+                      }`}
                   >
                     {sessionMessage}
                   </div>
@@ -1134,8 +1148,8 @@ useEffect(() => {
                                   Signed in:{" "}
                                   {session.verifiedAt
                                     ? new Date(
-                                        session.verifiedAt
-                                      ).toLocaleString()
+                                      session.verifiedAt
+                                    ).toLocaleString()
                                     : "Unavailable"}
                                 </p>
 
@@ -1143,8 +1157,8 @@ useEffect(() => {
                                   Last active:{" "}
                                   {session.lastSeenAt
                                     ? new Date(
-                                        session.lastSeenAt
-                                      ).toLocaleString()
+                                      session.lastSeenAt
+                                    ).toLocaleString()
                                     : "Unavailable"}
                                 </p>
                               </div>
@@ -1178,17 +1192,17 @@ useEffect(() => {
                   (session) =>
                     session.sessionId !== currentSessionId
                 ) && (
-                  <button
-                    type="button"
-                    onClick={revokeOtherSessions}
-                    disabled={revokingSession === "others"}
-                    className="w-full mt-4 rounded-lg bg-red-600 text-white py-3 font-medium hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {revokingSession === "others"
-                      ? "Signing out other devices..."
-                      : "Sign out all other devices"}
-                  </button>
-                )}
+                    <button
+                      type="button"
+                      onClick={revokeOtherSessions}
+                      disabled={revokingSession === "others"}
+                      className="w-full mt-4 rounded-lg bg-red-600 text-white py-3 font-medium hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {revokingSession === "others"
+                        ? "Signing out other devices..."
+                        : "Sign out all other devices"}
+                    </button>
+                  )}
               </div>
 
               {/* Contact mobile number */}
@@ -1281,7 +1295,7 @@ useEffect(() => {
                           htmlFor="contact-phone-otp"
                           className="block text-sm font-medium text-gray-700 mt-4 mb-1"
                         >
-                          Enter 6-digit OTP
+                          Enter 4-digit OTP
                         </label>
 
                         <input
@@ -1289,13 +1303,13 @@ useEffect(() => {
                           type="text"
                           inputMode="numeric"
                           autoComplete="one-time-code"
-                          maxLength={6}
+                          maxLength={4}
                           value={contactOtp}
                           onChange={(event) =>
                             setContactOtp(
                               event.target.value
                                 .replace(/\D/g, "")
-                                .slice(0, 6)
+                                .slice(0, 4)
                             )
                           }
                           placeholder="Enter OTP"
@@ -1308,7 +1322,7 @@ useEffect(() => {
                           onClick={verifyContactOtp}
                           disabled={
                             contactOtpLoading ||
-                            contactOtp.length !== 6
+                            contactOtp.length !== 4
                           }
                           className="w-full mt-3 rounded-lg bg-green-600 px-4 py-3 font-medium text-white hover:bg-green-700 disabled:opacity-50"
                         >
@@ -1332,11 +1346,10 @@ useEffect(() => {
                       <div
                         role="status"
                         aria-live="polite"
-                        className={`mt-3 rounded-lg p-3 text-sm ${
-                          contactOtpSuccess
+                        className={`mt-3 rounded-lg p-3 text-sm ${contactOtpSuccess
                             ? "bg-green-50 text-green-700"
                             : "bg-blue-50 text-blue-700"
-                        }`}
+                          }`}
                       >
                         {contactOtpMessage}
                       </div>
