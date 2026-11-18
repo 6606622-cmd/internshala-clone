@@ -646,21 +646,39 @@ useEffect(() => {
       setContactOtpMessage(
         "OTP sent successfully through SMS."
       );
-    } catch (error: unknown) {
-      setContactOtpMessage(
-        axios.isAxiosError(error)
-          ? error.response?.data?.message || error.message
-          : error instanceof Error
-            ? error.message
-            : "Unable to send OTP."
-      );
+ 
+} catch (error: any) {
+  console.error("CONTACT OTP REQUEST FAILED:", error);
 
-      setContactOtpSent(false);
-      setContactOtpReqId("");
-      setContactVerificationSessionId("");
-    } finally {
-      setContactOtpLoading(false);
-    }
+  console.error("Error response:", error?.response?.data);
+  console.error("Error message:", error?.message);
+
+  let errorMessage = "Unable to send OTP.";
+
+  if (axios.isAxiosError(error)) {
+    errorMessage =
+      error.response?.data?.message ||
+      error.response?.data?.error ||
+      error.message;
+  } else if (typeof error === "string") {
+    errorMessage = error;
+  } else if (error?.message) {
+    errorMessage = error.message;
+  } else if (error && typeof error === "object") {
+    errorMessage =
+      error.message ||
+      error.error ||
+      error.type ||
+      JSON.stringify(error);
+  }
+
+  setContactOtpMessage(errorMessage);
+  setContactOtpSent(false);
+  setContactOtpReqId("");
+  setContactVerificationSessionId("");
+} finally {
+  setContactOtpLoading(false);
+}
   };
 
   // Verify SMS OTP and link the number to the account
