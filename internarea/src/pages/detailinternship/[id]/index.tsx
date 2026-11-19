@@ -303,11 +303,11 @@ const index = () => {
 
         const token = await currentUser.getIdToken();
 
-      const response = await axios.get(RESUME_API, {
-  headers: {
-    Authorization: `Bearer ${token}`,
-  },
-});
+        const response = await axios.get(RESUME_API, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
 
         const result = response.data;
         const list = Array.isArray(result)
@@ -317,10 +317,11 @@ const index = () => {
             : Array.isArray(result?.resumes)
               ? result.resumes
               : [];
-
         const availableResumes = list.filter(
           (resume: any) =>
-            resume.status === "generated" && Boolean(resume.pdfUrl)
+            resume.status === "generated" &&
+            resume.paymentStatus === "paid" &&
+            Boolean(resume.pdfFileName || resume.pdfUrl)
         );
 
         if (cancelled) return;
@@ -640,7 +641,7 @@ const index = () => {
 
                               const token = await currentUser.getIdToken();
                               const response = await axios.get(
-                               `${RESUME_API}/${selectedResumeId}/download`,
+                                `${RESUME_API}/${selectedResumeId}/download`,
                                 {
                                   headers: {
                                     Authorization: `Bearer ${token}`,

@@ -127,15 +127,13 @@ const Index = () => {
 
       const token = await user.getIdToken();
 
-      const res = await axios.put(
-        `${API_URL}/${id}`,
-        { action },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      const res =await axios.put(
+  `${API_URL}/${id}`,
+  { action },
+  {
+    withCredentials: true,
+  }
+);
 
       const updatedApplication = res.data?.data || res.data;
 
