@@ -14,6 +14,7 @@ import "react-toastify/dist/ReactToastify.css";
 import { LanguageProvider } from "../../context/LanguageContext";
 import { getIdTokenResult } from "firebase/auth";
 import PasswordRouteGuard from "@/Components/PasswordRouteGuard";
+import { useRouter } from "next/router";
 
 const LOGIN_SESSION_KEY = "internarea_login_session";
 
@@ -104,13 +105,17 @@ function ApiSecurityInterceptor() {
 
   return null;
 }
-
 export default function App({ Component, pageProps }: AppProps) {
+  const router = useRouter();
+
+  const isAdminRoute = router.pathname.startsWith("/admin");
+
   return (
     <Provider store={store}>
       <AuthListener />
       <ApiSecurityInterceptor />
-      <PasswordRouteGuard />
+
+      {!isAdminRoute && <PasswordRouteGuard />}
 
       <LanguageProvider>
         <Navbar />
