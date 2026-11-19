@@ -12,6 +12,7 @@ const requireFirebaseAuth = require("../../middleware/requireFirebaseAuth");
 const requireVerifiedLogin = require("../../middleware/requireVerifiedLogin");
 
 const router = express.Router();
+const adminAuth = require("./admin");
 
 // ---------------- IST MONTH HELPER ----------------
 
@@ -138,18 +139,6 @@ const verifyApplicationSession = [
     },
 ];
 
-// ---------------- ADMIN AUTHORIZATION ----------------
-
-const verifyAdmin = (req, res, next) => {
-    if (req.user?.admin !== true) {
-        return res.status(403).json({
-            success: false,
-            message: "Admin access required",
-        });
-    }
-
-    return next();
-};
 
 // ---------------- SUBMIT APPLICATION ----------------
 
@@ -430,7 +419,7 @@ router.get("/:id", verifyUser, async (req, res) => {
 
 // ---------------- ADMIN ACCEPT OR REJECT ----------------
 
-router.put("/:id", verifyUser, verifyAdmin, async (req, res) => {
+router.put("/:id", adminAuth.requireAdmin, async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
             return res.status(400).json({

@@ -1,8 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const Internship = require("../internship");
+const adminAuth = require("./admin");
 
-router.post("/", async (req, res) => {
+router.post("/", adminAuth.requireAdmin, async (req, res) => {
   try {
     const Internshipdata = new Internship({
       title: req.body.title,

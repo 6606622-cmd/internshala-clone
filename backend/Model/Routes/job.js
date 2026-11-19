@@ -1,8 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const Job = require("../Job");
+const adminAuth = require("./admin");
 
-router.post("/", async (req, res) => {
+
+router.post("/", adminAuth.requireAdmin, async (req, res) => {
   try {
     const jobdata = new Job({
       title: req.body.title,
