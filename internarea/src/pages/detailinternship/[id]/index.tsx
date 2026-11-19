@@ -310,13 +310,29 @@ const index = () => {
         });
 
         const result = response.data;
-        const list = Array.isArray(result)
-          ? result
-          : Array.isArray(result?.data)
-            ? result.data
-            : Array.isArray(result?.resumes)
-              ? result.resumes
-              : [];
+        console.log("RESUME API URL:", RESUME_API);
+console.log("RESUME API STATUS:", response.status);
+console.log("RESUME API RESPONSE:", result);
+
+const list = Array.isArray(result)
+  ? result
+  : Array.isArray(result?.data)
+    ? result.data
+    : Array.isArray(result?.resumes)
+      ? result.resumes
+      : [];
+
+console.table(
+  list.map((resume: any) => ({
+    id: resume._id,
+    title: resume.title,
+    status: resume.status,
+    paymentStatus: resume.paymentStatus,
+    pdfFileName: resume.pdfFileName,
+    pdfUrl: resume.pdfUrl,
+    isDefault: resume.isDefault,
+  }))
+);
         const availableResumes = list.filter(
           (resume: any) =>
             resume.status === "generated" &&
