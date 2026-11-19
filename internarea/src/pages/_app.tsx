@@ -14,6 +14,7 @@ import "react-toastify/dist/ReactToastify.css";
 import { LanguageProvider } from "../../context/LanguageContext";
 import { getIdTokenResult } from "firebase/auth";
 import PasswordRouteGuard from "@/Components/PasswordRouteGuard";
+import AdminRouteGuard from "@/Components/AdminRouteGuard";
 import { useRouter } from "next/router";
 
 const LOGIN_SESSION_KEY = "internarea_login_session";
@@ -108,21 +109,40 @@ function ApiSecurityInterceptor() {
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
 
-  const isAdminRoute = router.pathname.startsWith("/admin");
+ const ADMIN_PROTECTED_PATHS = [
+  "/adminpanel",
+  "/applications",
+  "/postjob",
+  "/postInternship",
+  "/users",
+  "/analytics",
+  "/settings",
+];
+
+const isAdminProtectedRoute = ADMIN_PROTECTED_PATHS.includes(
+  router.pathname
+);
 
   return (
-    <Provider store={store}>
-      <AuthListener />
-      <ApiSecurityInterceptor />
+  <Provider store={store}>
+    <AuthListener />
+    <ApiSecurityInterceptor />
 
-      {!isAdminRoute && <PasswordRouteGuard />}
+    {!isAdminProtectedRoute && <PasswordRouteGuard />}
 
-      <LanguageProvider>
-        <Navbar />
+    <LanguageProvider>
+      <Navbar />
+
+      {isAdminProtectedRoute ? (
+        <AdminRouteGuard>
+          <Component {...pageProps} />
+        </AdminRouteGuard>
+      ) : (
         <Component {...pageProps} />
-        <Footer />
-        <ToastContainer position="top-right" autoClose={3000} />
-      </LanguageProvider>
-    </Provider>
-  );
-}
+      )}
+
+      <Footer />
+      <ToastContainer position="top-right" autoClose={3000} />
+    </LanguageProvider>
+  </Provider>
+)}

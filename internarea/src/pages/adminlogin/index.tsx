@@ -140,10 +140,13 @@ const index = () => {
     try {
       setisloading(true);
 
-      const res = await axios.post(
-        "https://internshala-clone-a0st.onrender.com/api/admin/adminlogin",
-        formdata
-      );
+   const res = await axios.post(
+  "https://internshala-clone-a0st.onrender.com/api/admin/adminlogin",
+  formdata,
+  {
+    withCredentials: true,
+  }
+);
 
       console.log("Login response:", res.data);
 

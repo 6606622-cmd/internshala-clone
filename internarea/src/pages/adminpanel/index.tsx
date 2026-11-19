@@ -11,6 +11,11 @@ import {
   ArrowRight,
 } from "lucide-react";
 import Link from "next/link";
+import axios from "axios";
+import { useRouter } from "next/router";
+import { useState } from "react";
+import toast from "react-hot-toast";
+import { LogOut } from "lucide-react";
 import { useLanguage } from "../../../context/LanguageContext";
 
 const text = {
@@ -242,6 +247,30 @@ const index = () => {
 
   const t = text[language] || text.en;
 
+  const router = useRouter();
+const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+const handleLogout = async () => {
+  try {
+    setIsLoggingOut(true);
+
+    await axios.post(
+      "https://internshala-clone-a0st.onrender.com/api/admin/logout",
+      {},
+      { withCredentials: true }
+    );
+
+    toast.success("Admin logged out successfully");
+
+    await router.replace("/adminlogin");
+  } catch (error) {
+    console.error("Admin logout failed:", error);
+    toast.error("Unable to logout. Please try again.");
+  } finally {
+    setIsLoggingOut(false);
+  }
+};
+
   const stats = [
     {
       label: t.totalApplications,
@@ -330,16 +359,30 @@ const index = () => {
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
       <div className="w-full max-w-none mx-auto">
 
-        {/* HEADER */}
-        <div className="mb-8">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-            {t.dashboard}
-          </h1>
+      {/* HEADER */}
+<div className="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
 
-          <p className="mt-1 text-sm text-gray-500">
-            {t.dashboardDesc}
-          </p>
-        </div>
+  <div>
+    <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
+      {t.dashboard}
+    </h1>
+
+    <p className="mt-1 text-sm text-gray-500">
+      {t.dashboardDesc}
+    </p>
+  </div>
+
+  <button
+    type="button"
+    onClick={handleLogout}
+    disabled={isLoggingOut}
+    className="inline-flex items-center justify-center gap-2 rounded-lg bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-60"
+  >
+    <LogOut size={17} />
+    {isLoggingOut ? "Logging out..." : "Logout"}
+  </button>
+
+</div>
 
         {/* STATS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
